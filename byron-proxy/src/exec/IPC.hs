@@ -12,10 +12,11 @@ import Control.Monad.Class.MonadST (MonadST)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Resource (ResourceT, runResourceT)
-import Control.Tracer (Tracer (..), contramap, nullTracer, traceWith)
+import Control.Tracer (Tracer (..), nullTracer, traceWith)
 import qualified Data.ByteString.Lazy as Lazy (ByteString, fromStrict)
 import qualified Data.ByteString.Lazy.Char8 as Lazy (pack)
 import Data.Either (either)
+import Data.Functor.Contravariant (contramap)
 import qualified Data.Map as Map
 
 import Network.TypedProtocol.Channel (hoistChannel)

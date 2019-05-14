@@ -10,9 +10,9 @@ import Control.Concurrent (myThreadId)
 import Control.Concurrent.Async (concurrently)
 import Control.Concurrent.STM (STM, atomically, retry)
 import Control.Monad (forM_)
-import Control.Tracer (Tracer (..), contramap, traceWith)
+import Control.Tracer (Tracer (..), traceWith)
 import qualified Data.ByteString.Lazy as Lazy (fromStrict)
-import Data.Functor.Contravariant (Op (..))
+import Data.Functor.Contravariant (Op (..), contramap)
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
@@ -219,12 +219,14 @@ defaultLoggerConfig = Monitoring.Representation
   , Monitoring.setupBackends   = [Monitoring.KatipBK]
   , Monitoring.defaultBackends = [Monitoring.KatipBK]
   , Monitoring.hasEKG          = Nothing
+  , Monitoring.hasPrometheus   = Nothing
   , Monitoring.hasGUI          = Nothing
   , Monitoring.options         = mempty
   }
   where
   stdoutScribe = Monitoring.ScribeDefinition
     { Monitoring.scKind     = Monitoring.StdoutSK
+    , Monitoring.scFormat   = Monitoring.ScText
     , Monitoring.scName     = "stdout"
     , Monitoring.scPrivacy  = Monitoring.ScPublic
     , Monitoring.scRotation = Nothing
