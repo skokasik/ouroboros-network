@@ -20,24 +20,12 @@
           (hsPkgs.base)
           ] ++ (pkgs.lib).optional (compiler.isGhc && (compiler.version).lt "8.5") (hsPkgs.contravariant);
         };
-      tests = {
-        "tests" = {
-          depends = [
-            (hsPkgs.base)
-            (hsPkgs.contra-tracer)
-            (hsPkgs.QuickCheck)
-            (hsPkgs.tasty)
-            (hsPkgs.tasty-hunit)
-            (hsPkgs.tasty-quickcheck)
-            ];
-          };
-        };
       };
     } // {
     src = (pkgs.lib).mkDefault (pkgs.fetchgit {
       url = "https://github.com/input-output-hk/iohk-monitoring-framework";
-      rev = "b656651fd3c357860d8136598b223b048c195eae";
-      sha256 = "08763nx69b959d14w3ksdyc5267n9gblinkbvw071yg3gnndn712";
+      rev = "cecf1f4ef0858761342159ca482bffb3038ec8c8";
+      sha256 = "02h8pvf6igi3yd1b3q7m9022af207l2i9blk42l7gx5jaaklrgl5";
       });
     postUnpack = "sourceRoot+=/contra-tracer; echo source root reset to \$sourceRoot";
     }

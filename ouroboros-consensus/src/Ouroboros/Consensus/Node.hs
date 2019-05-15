@@ -33,6 +33,7 @@ import           Control.Monad (void)
 import           Crypto.Random (ChaChaDRG)
 import           Data.Map.Strict (Map)
 import           Data.Void (Void)
+import           Data.Functor.Contravariant (contramap)
 
 import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadFork (MonadFork)
