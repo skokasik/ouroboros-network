@@ -329,7 +329,7 @@ instance Arbitrary Errors where
     _doesDirectoryExist <- dummy
     _doesFileExist      <- dummy
     _hOpen <- streamGen 1
-      [ FsResourceDoesNotExist, FsResourceInappropriateType
+      [ FsResourceDoesNotExist, FsInvalidOperation
       , FsResourceAlreadyInUse, FsResourceAlreadyExist
       , FsInsufficientPermissions ]
     _hSeek      <- streamGen 3 [ FsReachedEOF ]
@@ -338,17 +338,17 @@ instance Arbitrary Errors where
     _hPutBuffer <- streamGen 3 [ FsDeviceFull ]
     _hGetSize   <- streamGen 2 [ FsResourceDoesNotExist ]
     _createDirectory <- streamGen 3
-      [ FsInsufficientPermissions, FsResourceInappropriateType
+      [ FsInsufficientPermissions, FsInvalidOperation
       , FsResourceAlreadyExist ]
     _createDirectoryIfMissing <- streamGen 3
-      [ FsInsufficientPermissions, FsResourceInappropriateType
+      [ FsInsufficientPermissions, FsInvalidOperation
       , FsResourceAlreadyExist ]
     _listDirectory <- streamGen 3
-      [ FsInsufficientPermissions, FsResourceInappropriateType
+      [ FsInsufficientPermissions, FsInvalidOperation
       , FsResourceDoesNotExist ]
     _removeFile    <- streamGen 3
       [ FsInsufficientPermissions, FsResourceAlreadyInUse
-      , FsResourceDoesNotExist, FsResourceInappropriateType ]
+      , FsResourceDoesNotExist, FsInvalidOperation ]
     return Errors {..}
 
   shrink err@Errors {..} = filter (not . allNull) $ catMaybes

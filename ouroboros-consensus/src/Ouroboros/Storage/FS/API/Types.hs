@@ -70,16 +70,14 @@ data FsError = FsError {
   deriving Show
 
 data FsErrorType
-  = FsIllegalOperation
-  | FsResourceInappropriateType
   -- ^ e.g the user tried to open a directory with hOpen rather than a file.
-  | FsResourceAlreadyInUse
+  = FsResourceAlreadyInUse
   | FsResourceDoesNotExist
   | FsResourceAlreadyExist
   | FsReachedEOF
   | FsDeviceFull
   | FsInsufficientPermissions
-  | FsInvalidArgument
+  | FsInvalidOperation
   deriving (Show, Eq)
 
 instance Exception FsError where
@@ -136,14 +134,14 @@ ioToFsError fp ioErr
     | IO.isEOFErrorType eType =
         Right $ mkErr FsReachedEOF
     | IO.isIllegalOperationErrorType eType =
-        Right $ mkErr FsIllegalOperation
+        Right $ mkErr FsInvalidOperation
     | IO.isPermissionErrorType eType =
         Right $ mkErr FsInsufficientPermissions
     -- Other errors
     | eType == GHC.InappropriateType =
-        Right $ mkErr FsResourceInappropriateType
+        Right $ mkErr FsInvalidOperation
     | eType == GHC.InvalidArgument =
-        Right $ mkErr FsInvalidArgument
+        Right $ mkErr FsInvalidOperation
     | otherwise =
         Left $ FsUnexpectedException ioErr callStack
   where

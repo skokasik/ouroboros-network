@@ -31,7 +31,7 @@ tests tmpDir = testGroup "HasFS"
 -------------------------------------------------------------------------------}
 
 test_hOpenWriteInvalid :: Assertion
-test_hOpenWriteInvalid = apiEquivalenceFs (expectFsError FsInvalidArgument) $ \HasFS{..} _err -> do
+test_hOpenWriteInvalid = apiEquivalenceFs (expectFsError FsInvalidOperation) $ \HasFS{..} _err -> do
     _  <- hOpen ["foo.txt"] IO.WriteMode
     h2 <- hOpen ["foo.txt"] IO.ReadMode
     hPut h2 "haskell-is-nice"

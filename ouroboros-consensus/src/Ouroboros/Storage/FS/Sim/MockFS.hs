@@ -210,7 +210,7 @@ seekFilePtr err@ErrorHandling{..} MockFS{..} h seekMode o = do
     case mockHandles M.! h of
       HandleClosed ClosedHandle{..} ->
         throwError FsError {
-            fsErrorType   = FsIllegalOperation
+            fsErrorType   = FsInvalidOperation
           , fsErrorPath   = closedFilePath
           , fsErrorString = "handle closed"
           , fsErrorStack  = callStack
@@ -245,21 +245,21 @@ seekFilePtr err@ErrorHandling{..} MockFS{..} h seekMode o = do
             throwError (errAppend openFilePath)
   where
     errPastEnd fp  = FsError {
-                         fsErrorType   = FsInvalidArgument
+                         fsErrorType   = FsInvalidOperation
                        , fsErrorPath   = fp
                        , fsErrorString = "seek past EOF not supported"
                        , fsErrorStack  = callStack
                        , fsLimitation  = True
                        }
     errAppend  fp  = FsError {
-                         fsErrorType   = FsInvalidArgument
+                         fsErrorType   = FsInvalidOperation
                        , fsErrorPath   = fp
                        , fsErrorString = "seek in append mode not supported"
                        , fsErrorStack  = callStack
                        , fsLimitation  = True
                        }
     errNegative fp = FsError {
-                         fsErrorType   = FsInvalidArgument
+                         fsErrorType   = FsInvalidOperation
                        , fsErrorPath   = fp
                        , fsErrorString = "seek past beginning of file"
                        , fsErrorStack  = callStack
@@ -335,7 +335,7 @@ withOpenHandleModify err@ErrorHandling{..} h f =
         second (second HandleOpen) <$> f fs hs
       HandleClosed ClosedHandle{..} ->
         throwError FsError {
-            fsErrorType   = FsIllegalOperation
+            fsErrorType   = FsInvalidOperation
           , fsErrorPath   = closedFilePath
           , fsErrorString = "handle closed"
           , fsErrorStack  = callStack
@@ -357,7 +357,7 @@ withOpenHandleRead err@ErrorHandling{..} h f =
         second HandleOpen <$> f fs hs
       HandleClosed ClosedHandle{..} ->
         throwError FsError {
-            fsErrorType   = FsIllegalOperation
+            fsErrorType   = FsInvalidOperation
           , fsErrorPath   = closedFilePath
           , fsErrorString = "handle closed"
           , fsErrorStack  = callStack
@@ -382,7 +382,7 @@ checkFsTree' ErrorHandling{..} = go
   where
     go (Left (FsExpectedDir fp _)) =
         throwError FsError {
-            fsErrorType   = FsResourceInappropriateType
+            fsErrorType   = FsInvalidOperation
           , fsErrorPath   = fp
           , fsErrorString = "expected directory"
           , fsErrorStack  = callStack
@@ -390,7 +390,7 @@ checkFsTree' ErrorHandling{..} = go
           }
     go (Left (FsExpectedFile fp)) =
         throwError FsError {
-            fsErrorType   = FsResourceInappropriateType
+            fsErrorType   = FsInvalidOperation
           , fsErrorPath   = fp
           , fsErrorString = "expected file"
           , fsErrorStack  = callStack
@@ -459,7 +459,7 @@ hOpen :: CanSimFS m => ErrorHandling FsError m -> FsPath -> IOMode -> m Handle
 hOpen err@ErrorHandling{..} fp ioMode = do
     dirExists <- doesDirectoryExist err fp
     when dirExists $ throwError FsError {
-        fsErrorType   = FsResourceInappropriateType
+        fsErrorType   = FsInvalidOperation
       , fsErrorPath   = fp
       , fsErrorString = "hOpen: directories not supported"
       , fsErrorStack  = callStack
@@ -471,7 +471,7 @@ hOpen err@ErrorHandling{..} fp ioMode = do
             openHandles fs
       when (ioMode /= IO.ReadMode && alreadyHasWriter) $
         throwError FsError {
-            fsErrorType   = FsInvalidArgument
+            fsErrorType   = FsInvalidOperation
           , fsErrorPath   = fp
           , fsErrorString = "more than one concurrent writer not supported"
           , fsErrorStack  = callStack
@@ -525,7 +525,7 @@ hGet err@ErrorHandling{..} h n =
           return (bs, hs { openPtr = RW r w (o + fromIntegral (BS.length bs)) })
         Append -> do
           throwError FsError {
-              fsErrorType   = FsInvalidArgument
+              fsErrorType   = FsInvalidOperation
             , fsErrorPath   = openFilePath
             , fsErrorString = "cannot hGet in append mode"
             , fsErrorStack  = callStack
@@ -552,7 +552,7 @@ hPut err@ErrorHandling{..} h builder =
     written = toEnum $ BS.length toWrite
 
     errReadOnly fp = FsError {
-                         fsErrorType   = FsInvalidArgument
+                         fsErrorType   = FsInvalidOperation
                        , fsErrorPath   = fp
                        , fsErrorString = "handle is read-only"
                        , fsErrorStack  = callStack
@@ -611,7 +611,7 @@ hTruncate err@ErrorHandling{..} h sz =
       ptr' <- case (sz > fromIntegral (BS.length file), openPtr) of
                 (True, _) ->
                   throwError FsError {
-                      fsErrorType   = FsInvalidArgument
+                      fsErrorType   = FsInvalidOperation
                     , fsErrorPath   = openFilePath
                     , fsErrorString = "truncate cannot make the file larger"
                     , fsErrorStack  = callStack
@@ -619,7 +619,7 @@ hTruncate err@ErrorHandling{..} h sz =
                     }
                 (False, RW{}) ->
                   throwError FsError {
-                      fsErrorType   = FsInvalidArgument
+                      fsErrorType   = FsInvalidOperation
                     , fsErrorPath   = openFilePath
                     , fsErrorString = "truncate only supported in append mode"
                     , fsErrorStack  = callStack
@@ -712,14 +712,14 @@ doesFileExist err fp = readMockFS err $ \fs ->
 -- In the state machine tests, removing the root directory may cause the IO
 -- implementation to throw an 'FsInsufficientPermissions' error, depending on
 -- the permissions of the temporary directory used to run the tests in. In
--- theory it should throw a 'FsResourceInappropriateType' error. To avoid this
+-- theory it should throw a 'FsInvalidOperation' error. To avoid this
 -- mismatch during testing, we also consider removing the root folder a
 -- limitation of the mock file system.
 removeFile :: CanSimFS m => ErrorHandling FsError m -> FsPath -> m ()
 removeFile err@ErrorHandling{..} fp = modifyMockFS err $ \fs -> case fp of
     []
       -> throwError FsError {
-             fsErrorType   = FsIllegalOperation
+             fsErrorType   = FsInvalidOperation
            , fsErrorPath   = fp
            , fsErrorString = "cannot remove the root directory"
            , fsErrorStack  = callStack
@@ -727,7 +727,7 @@ removeFile err@ErrorHandling{..} fp = modifyMockFS err $ \fs -> case fp of
            }
     _ | fp `S.member` openFilePaths fs
       -> throwError FsError {
-             fsErrorType   = FsIllegalOperation
+             fsErrorType   = FsInvalidOperation
            , fsErrorPath   = fp
            , fsErrorString = "cannot remove an open file"
            , fsErrorStack  = callStack
