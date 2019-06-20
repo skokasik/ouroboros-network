@@ -1,5 +1,9 @@
 let
-  jupyter = import ./jupyterWith {};
+
+  jupyter = import (builtins.fetchGit {
+    url = https://github.com/tweag/jupyterWith;
+    rev = "";
+    }) {};
 
   iPython = jupyter.kernels.iPythonWith {
     name = "python";
@@ -10,8 +14,8 @@ let
     name = "haskell";
     packages = p: with p; [ 
 #    ihaskell-charts
+      (callPackage ./package/DeltaQ.nix {})
 #     ihaskell-plot
-      mfp
 #     ihaskell-hatex
 #     ihaskell-diagrams ihaskell-graphviz ihaskell-magic
 #     ihaskell-aeson ihaskell-gnuplot ihaskell-widgets
