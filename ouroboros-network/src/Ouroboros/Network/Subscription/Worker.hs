@@ -31,8 +31,6 @@ module Ouroboros.Network.Subscription.Worker
   , SubscriberError (..)
     -- * Tracing
   , SubscriptionTrace (..)
-    -- * Auxiliary functions
-  , sockAddrFamily
   ) where
 
 import           Control.Exception (SomeException (..))
@@ -57,6 +55,7 @@ import           Control.Monad.Class.MonadThrow
 import           Control.Tracer
 
 import           Ouroboros.Network.Server.ConnectionTable
+import           Ouroboros.Network.Socket (sockAddrFamily)
 import           Ouroboros.Network.Subscription.Subscriber
 
 -- | Time to wait between connection attempts when we don't have any DeltaQ

@@ -49,7 +49,6 @@ import qualified Codec.CBOR.Term as CBOR
 import           Codec.Serialise (Serialise (..), DeserialiseFailure)
 import           Codec.SerialiseTerm
 
-import qualified Network.Socket as Socket
 import           Network.Mux.Types
 import           Network.Mux.Interface
 
@@ -59,6 +58,7 @@ import           Ouroboros.Network.Protocol.ChainSync.Client (chainSyncClientNul
 import           Ouroboros.Network.Protocol.LocalTxSubmission.Client (localTxSubmissionClientNull)
 import           Ouroboros.Network.Protocol.Handshake.Type
 import           Ouroboros.Network.Protocol.Handshake.Version
+import           Ouroboros.Network.Snocket
 import           Ouroboros.Network.Socket
 import qualified Ouroboros.Network.Subscription.Ip as Subscription
 import           Ouroboros.Network.Subscription.Ip ( IPSubscriptionTarget (..)
@@ -137,7 +137,7 @@ nodeToClientCodecCBORTerm = CodecCBORTerm {encodeTerm, decodeTerm}
 connectTo
   :: Tracer IO (WithMuxBearer peerid (MuxTrace NodeToClientProtocols))
   -> Tracer IO (TraceSendRecv (Handshake NodeToClientVersion CBOR.Term) peerid (DecoderFailureOrTooMuchInput DeserialiseFailure))
-  -> (Socket.SockAddr -> Socket.SockAddr -> peerid)
+  -> (addr -> addr -> peerid)
   -- ^ create peerid from local address and remote address
   -> Versions NodeToClientVersion
               DictVersion
@@ -145,13 +145,14 @@ connectTo
   -- ^ A dictionary of protocol versions & applications to run on an established
   -- connection.  The application to run will be chosen by initial handshake
   -- protocol (the highest shared version will be chosen).
-  -> Maybe Socket.AddrInfo
+  -> Maybe addr
   -- ^ local address; the created socket will bind to it
-  -> Socket.AddrInfo
+  -> addr
   -- ^ remote address
   -> IO ()
-connectTo =
+connectTo createChannel sn =
   connectToNode
+    createChannel sn
     (\(DictVersion codec) -> encodeTerm codec)
     (\(DictVersion codec) -> decodeTerm codec)
 
@@ -161,7 +162,7 @@ connectTo =
 connectTo_V1
   :: Tracer IO (WithMuxBearer peerid (MuxTrace NodeToClientProtocols))
   -> Tracer IO (TraceSendRecv (Handshake NodeToClientVersion CBOR.Term) peerid (DecoderFailureOrTooMuchInput DeserialiseFailure))
-  -> (Socket.SockAddr -> Socket.SockAddr -> peerid)
+  -> (addr -> addr -> peerid)
   -- ^ create peerid from local address and remote address
   -> NodeToClientVersionData
   -- ^ Client version data sent during initial handshake protocol.  Client and
@@ -169,13 +170,14 @@ connectTo_V1
   -> (OuroborosApplication InitiatorApp peerid NodeToClientProtocols IO BL.ByteString a b)
   -- ^ 'OuroborosInitiatorApplication' which is run on an established connection
   -- using a multiplexer after the initial handshake protocol suceeds.
-  -> Maybe Socket.AddrInfo
+  -> Maybe addr
   -- ^ local address; the created socket will bind to it
-  -> Socket.AddrInfo
+  -> addr
   -- ^ remote address
   -> IO ()
-connectTo_V1 muxTracer handshakeTracer peeridFn versionData application =
+connectTo_V1 createChannel sn muxTracer handshakeTracer peeridFn versionData application =
   connectTo
+    createChannel sn
     muxTracer
     handshakeTracer
     peeridFn
@@ -185,6 +187,7 @@ connectTo_V1 muxTracer handshakeTracer peeridFn versionData application =
       (DictVersion nodeToClientCodecCBORTerm)
       application)
 
+
 -- | A specialised version of 'Ouroboros.Network.Socket.withServerNode'; Use
 -- 'withServer_V1' instead of you would like to use 'NodeToCLientV_1' version of
 -- the protocols.
@@ -193,20 +196,24 @@ withServer
   :: ( HasResponder appType ~ True )
   => Tracer IO (WithMuxBearer peerid (MuxTrace NodeToClientProtocols))
   -> Tracer IO (TraceSendRecv (Handshake NodeToClientVersion CBOR.Term) peerid (DecoderFailureOrTooMuchInput DeserialiseFailure))
-  -> ConnectionTable IO Socket.SockAddr
-  -> Socket.AddrInfo
-  -> (Socket.SockAddr -> Socket.SockAddr -> peerid)
+  -> ConnectionTable IO addr
+  -> IO channel
+  -> Snocket channel addr NodeToClientProtocols
+  -> addr
+  -> (addr -> addr -> peerid)
   -- ^ create peerid from local address and remote address
   -> (forall vData. DictVersion vData -> vData -> vData -> Accept)
   -> Versions NodeToClientVersion DictVersion
               (OuroborosApplication appType peerid NodeToClientProtocols IO BL.ByteString a b)
   -> (Async () -> IO t)
   -> IO t
-withServer muxTracer handshakeTracer tbl addr peeridFn acceptVersion versions k =
+withServer muxTracer handshakeTracer tbl createChannel sn addr peeridFn acceptVersion versions k =
   withServerNode
     muxTracer
     handshakeTracer
     tbl
+    createChannel
+    sn
     addr
     (\(DictVersion codec) -> encodeTerm codec)
     (\(DictVersion codec) -> decodeTerm codec)
@@ -218,13 +225,17 @@ withServer muxTracer handshakeTracer tbl addr peeridFn acceptVersion versions k 
 -- | A specialised version of 'withServer' which can only communicate using
 -- 'NodeToClientV_1' version of the protocol.
 --
+-- TODO: do not leak 'Snocket' abstraction, specialise it to 'Socket's and pipes.
+--
 withServer_V1
   :: ( HasResponder appType ~ True )
   => Tracer IO (WithMuxBearer peerid (MuxTrace NodeToClientProtocols))
   -> Tracer IO (TraceSendRecv (Handshake NodeToClientVersion CBOR.Term) peerid (DecoderFailureOrTooMuchInput DeserialiseFailure))
-  -> ConnectionTable IO Socket.SockAddr
-  -> Socket.AddrInfo
-  -> (Socket.SockAddr -> Socket.SockAddr -> peerid)
+  -> ConnectionTable IO addr
+  -> IO channel
+  -> Snocket channel addr NodeToClientProtocols
+  -> addr
+  -> (addr -> addr -> peerid)
   -- ^ create peerid from local address and remote address
   -> NodeToClientVersionData
   -- ^ Client version data sent during initial handshake protocol.  Client and
@@ -235,9 +246,15 @@ withServer_V1
   -- 'OuroborosInitiatorAndResponderApplication'.
   -> (Async () -> IO t)
   -> IO t
-withServer_V1 muxTracer handshakeTracer tbl addr peeridFn versionData application =
+withServer_V1 muxTracer handshakeTracer tbl createChannel sn addr peeridFn versionData application =
     withServer
-      muxTracer handshakeTracer tbl addr peeridFn
+      muxTracer
+      handshakeTracer
+      tbl
+      createChannel
+      sn
+      addr
+      peeridFn 
       (\(DictVersion _) -> acceptEq)
       (simpleSingletonVersions
         NodeToClientV_1
