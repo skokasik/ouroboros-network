@@ -10,6 +10,7 @@ module Test.Dynamic.General (
   ) where
 
 import qualified Data.Map as Map
+import           Data.Word (Word64)
 import           Test.QuickCheck
 
 import           Control.Monad.Class.MonadTime
@@ -85,15 +86,17 @@ prop_general ::
      , HasHeader blk
      )
   => SecurityParam
+  -> NumSlots
   -> NodeJoinPlan
   -> LeaderSchedule
   -> TestOutput blk
   -> Property
-prop_general k nodeJoinPlan schedule TestOutput{testOutputNodes} =
+prop_general k numSlots nodeJoinPlan schedule TestOutput{testOutputNodes} =
     counterexample ("nodeJoinPlan: " <> condense nodeJoinPlan) $
     counterexample ("schedule: " <> condense schedule) $
     counterexample ("nodeChains: " <> condense nodeChains) $
     tabulate "shortestLength" [show (rangeK k (shortestLength nodeChains))] $
+    tabulate "floor(4 * lastJoinSlot / numSlots)" [show lastJoinSlot] $
     prop_all_common_prefix
         maxForkLength
         (Map.elems nodeChains) .&&.
@@ -116,3 +119,12 @@ prop_general k nodeJoinPlan schedule TestOutput{testOutputNodes} =
         checkLeak dbName fs = counterexample
           ("Node " <> show nid <> "'s " <> dbName <> " is leaking file handles")
           (Mock.numOpenHandles fs === 0)
+
+    -- in which quarter of the simulation does the last node join?
+    lastJoinSlot =
+        fmap (\(SlotNo i, _) -> (4 * i) `div` toEnum t) $
+        Map.maxView m
+          :: Maybe Word64
+      where
+        NumSlots t = numSlots
+        NodeJoinPlan m = nodeJoinPlan
