@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveTraversable          #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE StandaloneDeriving         #-}
 {-# LANGUAGE TypeFamilies               #-}
@@ -149,7 +150,17 @@ newtype Point block = Point
 
 deriving instance StandardHash block => Eq   (Point block)
 deriving instance StandardHash block => Ord  (Point block)
-deriving instance StandardHash block => Show (Point block)
+instance StandardHash block => Show (Point block) where
+  showsPrec d = fmap (showParen (d > 10)) $ \case
+      Point Origin                          -> showString "Point Origin"
+      Point (At (Point.Block (SlotNo i) h)) -> showString "Point " . showParen True
+          (showString "At " . showParen True
+              (showString "Block "
+               . showParen True (showString "SlotNo " . showsPrec 11 i)
+               . showString " "
+               . showsPrec 11 h
+              )
+          )
 
 pattern GenesisPoint :: Point block
 pattern GenesisPoint = Point Origin
