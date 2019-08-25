@@ -71,7 +71,7 @@ blockFetchExample1 :: forall m.
                       (MonadSTM m, MonadST m, MonadAsync m, MonadFork m,
                        MonadCatch m, MonadTime m, MonadTimer m)
                    => Tracer m [TraceLabelPeer Int
-                                 (FetchDecision [Point BlockHeader])]
+                                 (FetchDecision BlockHeader [Point BlockHeader])]
                    -> Tracer m (TraceLabelPeer Int
                                  (TraceFetchClientState BlockHeader))
                    -> Tracer m ((TraceSendRecv (BlockFetch Block) Int DeserialiseFailure))

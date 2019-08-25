@@ -101,12 +101,12 @@ type PeerInfo header extra =
 -- to fetch any blocks. This type is used to wrap intermediate and final
 -- results.
 --
-type FetchDecision result = Either FetchDecline result
+type FetchDecision header result = Either (FetchDecline header) result
 
 -- | All the various reasons we can decide not to fetch blocks from a peer.
 --
-data FetchDecline =
-     FetchDeclineChainNotPlausible
+data FetchDecline header =
+     FetchDeclineChainNotPlausible !(Point header) !(Point header)
    | FetchDeclineChainNoIntersection
    | FetchDeclineAlreadyFetched
    | FetchDeclineInFlightThisPeer
@@ -148,7 +148,7 @@ fetchDecisions
   -> AnchoredFragment header
   -> (Point block -> Bool)
   -> [(AnchoredFragment header, PeerInfo header extra)]
-  -> [(FetchDecision (FetchRequest header), PeerInfo header extra)]
+  -> [(FetchDecision header (FetchRequest header), PeerInfo header extra)]
 fetchDecisions fetchDecisionPolicy@FetchDecisionPolicy {
                  plausibleCandidateChain,
                  compareCandidateChains,
@@ -285,17 +285,20 @@ current chain. So our first task is to filter down to this set.
 -- the current chain.
 --
 filterPlausibleCandidates
-  :: HasHeader header
+  :: ( HasHeader block
+     , HasHeader header
+     , HeaderHash block ~ HeaderHash header
+     )
   => (AnchoredFragment block -> AnchoredFragment header -> Bool)
   -> AnchoredFragment block  -- ^ The current chain
   -> [(AnchoredFragment header, peerinfo)]
-  -> [(FetchDecision (AnchoredFragment header), peerinfo)]
+  -> [(FetchDecision header (AnchoredFragment header), peerinfo)]
 filterPlausibleCandidates plausibleCandidateChain currentChain chains =
     [ (chain', peer)
     | (chain,  peer) <- chains
     , let chain' = do
             guard (plausibleCandidateChain currentChain chain)
-              ?! FetchDeclineChainNotPlausible
+              ?! FetchDeclineChainNotPlausible (castPoint (AnchoredFragment.lastPoint currentChain)) (AnchoredFragment.lastPoint chain)
             return chain
     ]
 
@@ -413,8 +416,8 @@ selectForkSuffixes
   :: (HasHeader header, HasHeader block,
       HeaderHash header ~ HeaderHash block)
   => AnchoredFragment block
-  -> [(FetchDecision (AnchoredFragment header), peerinfo)]
-  -> [(FetchDecision (ChainSuffix      header), peerinfo)]
+  -> [(FetchDecision header (AnchoredFragment header), peerinfo)]
+  -> [(FetchDecision header (ChainSuffix      header), peerinfo)]
 selectForkSuffixes current chains =
     [ (mchain', peer)
     | (mchain,  peer) <- chains
@@ -465,8 +468,8 @@ of individual blocks without their relationship to each other.
 filterNotAlreadyFetched
   :: (HasHeader header, HeaderHash header ~ HeaderHash block)
   => (Point block -> Bool)
-  -> [(FetchDecision (ChainSuffix        header), peerinfo)]
-  -> [(FetchDecision (CandidateFragments header), peerinfo)]
+  -> [(FetchDecision header (ChainSuffix        header), peerinfo)]
+  -> [(FetchDecision header (CandidateFragments header), peerinfo)]
 filterNotAlreadyFetched alreadyDownloaded chains =
     [ (mcandidates, peer)
     | (mcandidate,  peer) <- chains
@@ -485,9 +488,9 @@ filterNotAlreadyFetched alreadyDownloaded chains =
 
 filterNotAlreadyInFlightWithPeer
   :: HasHeader header
-  => [(FetchDecision (CandidateFragments header), PeerFetchInFlight header,
+  => [(FetchDecision header (CandidateFragments header), PeerFetchInFlight header,
                                                   peerinfo)]
-  -> [(FetchDecision (CandidateFragments header), peerinfo)]
+  -> [(FetchDecision header (CandidateFragments header), peerinfo)]
 filterNotAlreadyInFlightWithPeer chains =
     [ (mcandidatefragments',          peer)
     | (mcandidatefragments, inflight, peer) <- chains
@@ -515,10 +518,10 @@ filterNotAlreadyInFlightWithPeer chains =
 filterNotAlreadyInFlightWithOtherPeers
   :: HasHeader header
   => FetchMode
-  -> [(FetchDecision [ChainFragment header], PeerFetchStatus header,
+  -> [(FetchDecision header [ChainFragment header], PeerFetchStatus header,
                                              PeerFetchInFlight header,
                                              peerinfo)]
-  -> [(FetchDecision [ChainFragment header], peerinfo)]
+  -> [(FetchDecision header [ChainFragment header], peerinfo)]
 
 filterNotAlreadyInFlightWithOtherPeers FetchModeDeadline chains =
     [ (mchainfragments,       peer)
@@ -553,10 +556,10 @@ prioritisePeerChains
   => FetchMode
   -> (AnchoredFragment header -> AnchoredFragment header -> Ordering)
   -> (header -> SizeInBytes)
-  -> [(FetchDecision (CandidateFragments header), PeerFetchInFlight header,
+  -> [(FetchDecision header (CandidateFragments header), PeerFetchInFlight header,
                                                   PeerGSV,
                                                   peer)]
-  -> [(FetchDecision [ChainFragment header],      peer)]
+  -> [(FetchDecision header [ChainFragment header],      peer)]
 prioritisePeerChains FetchModeDeadline compareCandidateChains blockFetchSize =
     --TODO: last tie-breaker is still original order (which is probably
     -- peerid order). We should use a random tie breaker so that adversaries
@@ -728,11 +731,11 @@ fetchRequestDecisions
   :: HasHeader header
   => FetchDecisionPolicy header
   -> FetchMode
-  -> [(FetchDecision [ChainFragment header], PeerFetchStatus header,
+  -> [(FetchDecision header [ChainFragment header], PeerFetchStatus header,
                                              PeerFetchInFlight header,
                                              PeerGSV,
                                              peer)]
-  -> [(FetchDecision (FetchRequest header),  peer)]
+  -> [(FetchDecision header (FetchRequest header),  peer)]
 fetchRequestDecisions fetchDecisionPolicy fetchMode chains =
     go nConcurrentFetchPeers0 Set.empty chains
   where
@@ -804,8 +807,8 @@ fetchRequestDecision
   -> PeerFetchInFlightLimits
   -> PeerFetchInFlight header
   -> PeerFetchStatus header
-  -> FetchDecision [ChainFragment header]
-  -> FetchDecision (FetchRequest  header)
+  -> FetchDecision header [ChainFragment header]
+  -> FetchDecision header (FetchRequest  header)
 
 fetchRequestDecision _ _ _ _ _ _ (Left decline)
   = Left decline

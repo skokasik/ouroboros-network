@@ -57,7 +57,7 @@ fetchLogicIterations
   :: (MonadSTM m, Ord peer,
       HasHeader header, HasHeader block,
       HeaderHash header ~ HeaderHash block)
-  => Tracer m [TraceLabelPeer peer (FetchDecision [Point header])]
+  => Tracer m [TraceLabelPeer peer (FetchDecision header [Point header])]
   -> Tracer m (TraceLabelPeer peer (TraceFetchClientState header))
   -> FetchDecisionPolicy header
   -> FetchTriggerVariables peer header m
@@ -99,7 +99,7 @@ fetchLogicIteration
   :: (MonadSTM m, Ord peer,
       HasHeader header, HasHeader block,
       HeaderHash header ~ HeaderHash block)
-  => Tracer m [TraceLabelPeer peer (FetchDecision [Point header])]
+  => Tracer m [TraceLabelPeer peer (FetchDecision header [Point header])]
   -> Tracer m (TraceLabelPeer peer (TraceFetchClientState header))
   -> FetchDecisionPolicy header
   -> FetchTriggerVariables peer header m
@@ -166,7 +166,7 @@ fetchDecisionsForStateSnapshot
       Ord peer)
   => FetchDecisionPolicy header
   -> FetchStateSnapshot peer header block m
-  -> [( FetchDecision (FetchRequest header),
+  -> [( FetchDecision header (FetchRequest header),
         PeerInfo header (FetchClientStateVars m header, peer)
       )]
 
@@ -210,7 +210,7 @@ fetchDecisionsForStateSnapshot
 fetchLogicIterationAct :: (MonadSTM m, HasHeader header)
                        => Tracer m (TraceLabelPeer peer (TraceFetchClientState header))
                        -> FetchDecisionPolicy header
-                       -> [(FetchDecision (FetchRequest header),
+                       -> [(FetchDecision header (FetchRequest header),
                             PeerGSV,
                             FetchClientStateVars m header,
                             peer)]

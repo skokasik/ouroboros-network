@@ -36,7 +36,7 @@ import           Ouroboros.Consensus.TxSubmission
 data Tracers' peer blk f = Tracers
   { chainSyncClientTracer         :: f (TraceChainSyncClientEvent blk)
   , chainSyncServerTracer         :: f (TraceChainSyncServerEvent blk)
-  , blockFetchDecisionTracer      :: f [TraceLabelPeer peer (FetchDecision [Point (Header blk)])]
+  , blockFetchDecisionTracer      :: f [TraceLabelPeer peer (FetchDecision (Header blk) [Point (Header blk)])]
   , blockFetchClientTracer        :: f (TraceLabelPeer peer (TraceFetchClientState (Header blk)))
   , blockFetchServerTracer        :: f (TraceBlockFetchServerEvent blk)
   , txInboundTracer               :: f (TraceTxSubmissionInbound  (GenTxId blk) (GenTx blk))
