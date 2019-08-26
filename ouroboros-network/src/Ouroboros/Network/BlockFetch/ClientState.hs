@@ -14,6 +14,7 @@ module Ouroboros.Network.BlockFetch.ClientState (
     PeerFetchInFlight(..),
     initialPeerFetchInFlight,
     FetchRequest(..),
+    FetchRequestDiscount,
     addNewFetchRequest,
     acknowledgeFetchRequest,
     completeBlockDownload,
@@ -244,15 +245,6 @@ newtype FetchRequest header =
         FetchRequest { fetchRequestFragments :: [ChainFragment header] }
   deriving Show
 
-instance HasHeader header => Semigroup (FetchRequest header) where
-  FetchRequest afs@(_:_) <> FetchRequest bfs@(_:_)
-    | Just f <- CF.joinChainFragments (last afs) (head bfs)
-    = FetchRequest (init afs ++ f : tail bfs)
-
-  FetchRequest afs <> FetchRequest bfs
-    = FetchRequest (afs ++ bfs)
-
-
 -- | Tracing types for the various events that change the state
 -- (i.e. 'FetchClientStateVars') for a block fetch client.
 --
@@ -345,10 +337,11 @@ acknowledgeFetchRequest :: (MonadSTM m, HasHeader header)
                         => Tracer m (TraceFetchClientState header)
                         -> FetchClientStateVars m header
                         -> m ( FetchRequest header
+                             , FetchRequestDiscount
                              , PeerGSV
                              , PeerFetchInFlightLimits )
 acknowledgeFetchRequest tracer FetchClientStateVars {..} = do
-    result@(request, _, _) <-
+    result@(request, _, _, _) <-
       atomically $ takeTFetchRequestVar fetchClientRequestVar
     traceWith tracer (AcknowledgedFetchRequest request)
     return result
@@ -394,15 +387,22 @@ completeBlockDownload tracer blockFetchSize inflightlimits
 
 completeFetchBatch :: MonadSTM m
                    => FetchClientStateVars m header
+                   -> FetchRequestDiscount
                    -> m ()
-completeFetchBatch FetchClientStateVars {fetchClientInFlightVar} =
+completeFetchBatch FetchClientStateVars {fetchClientInFlightVar} discount =
     atomically $ modifyTVar fetchClientInFlightVar $ \inflight ->
-      assert (if peerFetchReqsInFlight inflight == 1
+      let
+        incoming   = peerFetchReqsInFlight inflight
+        discounted = incoming - getFetchRequestDiscount discount
+
+        wholeRequestIsDone = discounted == 1
+      in
+      assert (if wholeRequestIsDone
                  then peerFetchBytesInFlight inflight == 0
                    && Set.null (peerFetchBlocksInFlight inflight)
                  else True)
       inflight {
-        peerFetchReqsInFlight = peerFetchReqsInFlight inflight - 1
+        peerFetchReqsInFlight = discounted - 1
       }
 
 --
@@ -421,9 +421,52 @@ completeFetchBatch FetchClientStateVars {fetchClientInFlightVar} =
 -- request based on the more recent state.
 --
 type TFetchRequestVar m header =
-       TMergeVar m (FetchRequest header,
+       TMergeVar m (FetchRequestAcc header,
                     Last PeerGSV,
                     Last PeerFetchInFlightLimits)
+
+-- | A 'FetchRequest' accumulated in the 'fetchClientRequestVar' queue
+--
+-- As an optimization of the common case, additions to the queue join the
+-- youngest old fragment and the oldest new fragment into a single fragment
+-- when possible. However, this optimization must be accounted for when
+-- maintaining the 'peerFetchReqsInFlight' counter; otherwise a spurious
+-- 'Ouroboros.Network.BlockFetch.Decision.FetchDeclineConcurrencyLimit' decline
+-- may arise, for example. The 'addNewFetchRequest' function counts (not
+-- joined) fragments before they're enqueued, while 'completeFetchBatch'
+-- instead counts (possibly-joined) fragments after they're dequeued. We
+-- therefore maintain an additional discount for 'completeFetchBatch' apply.
+data FetchRequestAcc header = FetchRequestAcc
+  { fetchRequestAcc         :: !(FetchRequest header)
+    -- | How many fragments were joined to the queue's existing contents
+  , fetchRequestAccDiscount :: !FetchRequestDiscount
+  }
+
+-- | See 'FetchRequestAcc'
+newtype FetchRequestDiscount = FetchRequestDiscount {getFetchRequestDiscount :: Word }
+
+instance Semigroup FetchRequestDiscount where
+  FetchRequestDiscount a <> FetchRequestDiscount b = FetchRequestDiscount (a + b)
+
+instance Monoid FetchRequestDiscount where
+  mempty = FetchRequestDiscount 0
+
+instance HasHeader header => Semigroup (FetchRequestAcc header) where
+  (<>)
+      (FetchRequestAcc (FetchRequest afs) adisc)
+      (FetchRequestAcc (FetchRequest bfs) bdisc)
+
+    | not (null afs || null bfs)
+    , Just f <- CF.joinChainFragments (last afs) (head bfs)
+    = FetchRequestAcc
+      (FetchRequest (init afs ++ f : tail bfs))
+      (adisc <> FetchRequestDiscount 1 <> bdisc)
+
+    | otherwise
+    = FetchRequestAcc
+      (FetchRequest (afs ++ bfs))
+      (adisc <> bdisc)
+
 
 newTFetchRequestVar :: MonadSTM m => STM m (TFetchRequestVar m header)
 newTFetchRequestVar = newTMergeVar
@@ -434,16 +477,27 @@ writeTFetchRequestVar :: (MonadSTM m, HasHeader header)
                       -> PeerGSV
                       -> PeerFetchInFlightLimits
                       -> STM m ()
-writeTFetchRequestVar v r g l = writeTMergeVar v (r, Last g, Last l)
+writeTFetchRequestVar v r g l = writeTMergeVar v (r', Last g, Last l)
+  where
+    r' = FetchRequestAcc
+      { fetchRequestAcc         = r
+      , fetchRequestAccDiscount = mempty
+      }
 
 takeTFetchRequestVar :: MonadSTM m
                      => TFetchRequestVar m header
                      -> STM m (FetchRequest header,
+                               FetchRequestDiscount,
                                PeerGSV,
                                PeerFetchInFlightLimits)
-takeTFetchRequestVar v = (\(r,g,l) -> (r, getLast g, getLast l))
-                     <$> takeTMergeVar v
-
+takeTFetchRequestVar v =
+  (\(r,g,l) ->
+     ( fetchRequestAcc r
+     , fetchRequestAccDiscount r
+     , getLast g
+     , getLast l
+     )) <$>
+  takeTMergeVar v
 
 --
 -- STM TMergeVar mini-abstraction

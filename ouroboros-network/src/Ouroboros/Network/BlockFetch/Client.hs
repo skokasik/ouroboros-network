@@ -36,6 +36,7 @@ import           Ouroboros.Network.BlockFetch.ClientState
                    , FetchClientPolicy(..)
                    , FetchClientStateVars
                    , FetchRequest(..)
+                   , FetchRequestDiscount
                    , TraceFetchClientState
                    , acknowledgeFetchRequest
                    , completeBlockDownload
@@ -113,23 +114,24 @@ blockFetchClient FetchClientContext {
       -- in-flight, and the tracking state that the fetch logic uses now
       -- reflects that.
       --
-      (request, gsvs, inflightlimits) <-
+      (request, discount, gsvs, inflightlimits) <-
         acknowledgeFetchRequest tracer stateVars
 
       return $ senderActive outstanding gsvs inflightlimits
-                            (fetchRequestFragments request)
+                            discount (fetchRequestFragments request)
 
     senderActive :: forall n.
                     Nat n
                  -> PeerGSV
                  -> PeerFetchInFlightLimits
+                 -> FetchRequestDiscount
                  -> [ChainFragment header]
                  -> PeerSender (BlockFetch block) AsClient
                                BFIdle n () m ()
 
     -- We now do have some requests that we have accepted but have yet to
     -- actually send out. Lets send out the first one.
-    senderActive outstanding gsvs inflightlimits (fragment:fragments) =
+    senderActive outstanding gsvs inflightlimits discount (fragment:fragments) =
       SenderEffect $ do
 {-
         now <- getMonotonicTime
@@ -160,18 +162,20 @@ blockFetchClient FetchClientContext {
           SenderPipeline
             (ClientAgency TokIdle)
             (MsgRequestRange range)
-            (receiverBusy (ChainFragment.toOldestFirst fragment) inflightlimits)
-            (senderActive (Succ outstanding) gsvs inflightlimits fragments)
+            (receiverBusy (ChainFragment.toOldestFirst fragment) inflightlimits
+                (if null fragments then discount else mempty))
+            (senderActive (Succ outstanding) gsvs inflightlimits discount fragments)
 
     -- And when we run out, go back to idle.
-    senderActive outstanding _ _ [] = senderIdle outstanding
+    senderActive outstanding _ _ _ [] = senderIdle outstanding
 
 
     receiverBusy :: [header]
                  -> PeerFetchInFlightLimits
+                 -> FetchRequestDiscount
                  -> PeerReceiver (BlockFetch block) AsClient
                                  BFBusy BFIdle m ()
-    receiverBusy headers inflightlimits =
+    receiverBusy headers inflightlimits discount =
       ReceiverAwait
         (ServerAgency TokBusy) $ \msg ->
         case msg of
@@ -188,18 +192,19 @@ blockFetchClient FetchClientContext {
           MsgNoBlocks   -> ReceiverDone ()
           --TODO: also adjust the in-flight stats
 
-          MsgStartBatch -> receiverStreaming inflightlimits headers
+          MsgStartBatch -> receiverStreaming inflightlimits headers discount
 
     receiverStreaming :: PeerFetchInFlightLimits
                       -> [header]
+                      -> FetchRequestDiscount
                       -> PeerReceiver (BlockFetch block) AsClient
                                       BFStreaming BFIdle m ()
-    receiverStreaming inflightlimits headers =
+    receiverStreaming inflightlimits headers discount =
       ReceiverAwait
         (ServerAgency TokStreaming) $ \msg ->
         case (msg, headers) of
           (MsgBatchDone, []) -> ReceiverEffect $ do
-            completeFetchBatch stateVars
+            completeFetchBatch stateVars discount
             return (ReceiverDone ())
 
 
@@ -242,7 +247,7 @@ blockFetchClient FetchClientContext {
             completeBlockDownload tracer blockFetchSize inflightlimits
                                   header stateVars
 
-            return (receiverStreaming inflightlimits headers')
+            return (receiverStreaming inflightlimits headers' discount)
 
           (MsgBatchDone, (_:_)) -> ReceiverEffect $
             throwM BlockFetchProtocolFailureTooFewBlocks
