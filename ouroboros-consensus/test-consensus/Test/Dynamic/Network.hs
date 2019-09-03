@@ -89,6 +89,7 @@ import qualified Ouroboros.Storage.LedgerDB.MemPolicy as LgrDB
 import qualified Ouroboros.Storage.Util.ErrorHandling as EH
 
 import           Test.Dynamic.TxGen
+import           Test.Dynamic.Util.NetPartitionPlan
 import           Test.Dynamic.Util.NodeJoinPlan
 import           Test.Dynamic.Util.NodeTopology
 
@@ -114,11 +115,12 @@ runNodeNetwork :: forall m blk.
                  -> NumCoreNodes
                  -> NodeJoinPlan
                  -> NodeTopology
+                 -> Maybe RefinedNetPartitionPlan
                  -> (CoreNodeId -> ProtocolInfo blk)
                  -> ChaChaDRG
                  -> DiffTime
                  -> m (TestOutput blk)
-runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
+runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology mbRnpp
   pInfo initRNG slotLen = do
     -- This function is organized around the notion of a network of nodes as a
     -- simple graph with no loops. The graph topology is determined by
@@ -139,11 +141,16 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
     nodeVars <- fmap Map.fromList $ do
       forM coreNodeIds $ \nid -> (,) nid <$> atomically newEmptyTMVar
 
+    -- schedule the network parition, if any
+    mbNpp' <- case fmap getRefinedNetPartitionPlan mbRnpp of
+      Nothing  -> pure Nothing
+      Just npp -> (Just . (,) npp) <$> spawnNetPartition npp
+
     -- spawn threads for each undirected edge
     let edges = edgesNodeTopology nodeTopology
     forM_ edges $ \edge -> do
       void $ forkLinkedThread registry $ do
-        undirectedEdge nullTracer nodeVars edge
+        undirectedEdge nullTracer mbNpp' nodeVars edge
 
     -- create nodes
     let nodesByJoinSlot =
@@ -190,10 +197,11 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
     undirectedEdge ::
          HasCallStack
       => Tracer m (SlotNo, MiniProtocolState, MiniProtocolExpectedException blk)
+      -> Maybe (NetPartitionPlan, StrictTVar m Bool)
       -> Map CoreNodeId (StrictTMVar m (LimitedApp m NodeId blk))
       -> (CoreNodeId, CoreNodeId)
       -> m ()
-    undirectedEdge tr nodeVars (node1, node2) = do
+    undirectedEdge tr mbNpp' nodeVars (node1, node2) = do
       -- block until both endpoints have joined the network
       (endpoint1, endpoint2) <- do
         let lu node = case Map.lookup node nodeVars of
@@ -203,9 +211,9 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
 
       -- spawn threads for both directed edges
       void $ withAsyncsWaitAny $
-          directedEdge tr btime endpoint1 endpoint2
+          directedEdge tr btime mbNpp' endpoint1 endpoint2
         NE.:|
-        [ directedEdge tr btime endpoint2 endpoint1
+        [ directedEdge tr btime mbNpp' endpoint2 endpoint1
         ]
 
     -- | Produce transactions every time the slot changes and submit them to
@@ -340,6 +348,30 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
             }
       return (nodeKernel, nodeInfo, LimitedApp app)
 
+    -- Allocates a TVar flag indicating if the partition is in effect and
+    -- spawns a thread that will set that flag during the correct slots
+    spawnNetPartition ::
+         HasCallStack
+      => NetPartitionPlan
+      -> m (StrictTVar m Bool)
+    spawnNetPartition npp = do
+      var <- atomically $ newTVar False
+
+      void $ forkLinkedThread registry $ do
+        -- start partition as scheduled
+        tooLate <- blockUntilSlot btime $ fst (nppInterval npp)
+        when tooLate $ do
+          error $ "unsatisfiable NetPartitionPlan begin: " ++ show npp
+        atomically $ writeTVar var True
+
+        -- end partition as scheduled
+        tooLate' <- blockUntilSlot btime $ snd (nppInterval npp)
+        when tooLate' $ do
+          error $ "unsatisfiable NetPartitionPlan end: " ++ show npp
+        atomically $ writeTVar var False
+
+      pure var
+
 {-------------------------------------------------------------------------------
   Running the Mini Protocols on an Ordered Pair of Nodes
 -------------------------------------------------------------------------------}
@@ -372,13 +404,14 @@ directedEdge ::
      )
   => Tracer m (SlotNo, MiniProtocolState, MiniProtocolExpectedException blk)
   -> BlockchainTime m
+  -> Maybe (NetPartitionPlan, StrictTVar m Bool)
   -> (CoreNodeId, LimitedApp m NodeId blk)
   -> (CoreNodeId, LimitedApp m NodeId blk)
   -> m ()
-directedEdge tr btime nodeapp1 nodeapp2 =
+directedEdge tr btime mbNpp nodeapp1 nodeapp2 =
     loopOnMPEE
   where
-    loopOnMPEE = directedEdgeInner nodeapp1 nodeapp2 `catch` h
+    loopOnMPEE = directedEdgeInner mbNpp nodeapp1 nodeapp2 `catch` h
       where
         h :: MiniProtocolExpectedException blk -> m ()
         h e = do
@@ -397,12 +430,13 @@ directedEdgeInner ::
      , MonadCatch m
      , SupportedBlock blk
      )
-  => (CoreNodeId, LimitedApp m NodeId blk)
+  => Maybe (NetPartitionPlan, StrictTVar m Bool)
+  -> (CoreNodeId, LimitedApp m NodeId blk)
      -- ^ client threads on this node
   -> (CoreNodeId, LimitedApp m NodeId blk)
      -- ^ server threads on this node
   -> m ()
-directedEdgeInner (node1, LimitedApp app1) (node2, LimitedApp app2) = do
+directedEdgeInner mbNpp (node1, LimitedApp app1) (node2, LimitedApp app2) = do
     void $ (>>= withAsyncsWaitAny) $
       fmap flattenPairs $
       sequence $
@@ -438,9 +472,28 @@ directedEdgeInner (node1, LimitedApp app1) (node2, LimitedApp app2) = do
     miniProtocol client server = do
        (chan, dualChan) <- createConnectedChannels
        pure
-         ( client app1 (fromCoreNodeId node2) chan
-         , server app2 (fromCoreNodeId node1) dualChan
+         ( client app1 (fromCoreNodeId node2) (implementNetPartition chan)
+         , server app2 (fromCoreNodeId node1) (implementNetPartition dualChan)
          )
+
+    -- block sends during the network partition's interval if the nodes are in
+    -- different partitions
+    implementNetPartition :: Channel m a -> Channel m a
+    implementNetPartition = case mbNpp of
+      Nothing -> id
+      Just (npp, var)
+        | assignmentNetPartitionPlan npp node1
+            ==
+          assignmentNetPartitionPlan npp node2
+        -> id
+        | otherwise
+        -> \chan -> chan
+          { send = \msg -> do
+              atomically $ do
+                partitionInEffect <- readTVar var
+                check $ not partitionInEffect
+              send chan msg
+          }
 
     wrapMPEE ::
          Exception e

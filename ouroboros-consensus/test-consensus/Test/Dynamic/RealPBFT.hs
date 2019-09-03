@@ -49,11 +49,12 @@ import           Test.Util.Orphans.Arbitrary ()
 
 tests :: TestTree
 tests = testGroup "Dynamic chain generation"
-    [ testProperty "check Real PBFT setup" $
+    [ fewerIterations $
+      testProperty "check Real PBFT setup" $
         \numCoreNodes ->
           forAll (elements (enumCoreNodes numCoreNodes)) $ \coreNodeId ->
           prop_setup_coreNodeId numCoreNodes coreNodeId
-    , adjustOption (\(QuickCheckTests n) -> QuickCheckTests (1 `max` (div n 10))) $
+    , fewerIterations $
       -- as of merging PR #773, this test case fails without the commit that
       -- introduces the InvalidRollForward exception
       --
@@ -71,11 +72,15 @@ tests = testGroup "Dynamic chain generation"
               , (CoreNodeId 2,SlotNo 22)
               ]
             , nodeTopology = meshNodeTopology ncn
+            , netPartitionPlan = Nothing
             }
     , testProperty "simple Real PBFT convergence" $
           prop_simple_real_pbft_convergence sp
     ]
   where
+    fewerIterations = adjustOption $
+        \(QuickCheckTests n) -> QuickCheckTests (1 `max` div n 10)
+
     sp = defaultSecurityParam
 
 prop_setup_coreNodeId ::

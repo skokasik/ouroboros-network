@@ -18,6 +18,7 @@ import           Ouroboros.Consensus.Util.Random
 
 import           Test.Dynamic.General
 import           Test.Dynamic.Util
+import           Test.Dynamic.Util.NetPartitionPlan
 import           Test.Dynamic.Util.NodeJoinPlan
 import           Test.Dynamic.Util.NodeTopology
 
@@ -49,11 +50,20 @@ tests = testGroup "Dynamic chain generation"
             (genNodeTopology numCoreNodes)
             shrinkNodeTopology $
         \nodeTopology ->
+        forAllShrink
+            (Just <$> genNetPartitionPlan numCoreNodes numSlots)
+            (liftShrink shrinkNetPartitionPlan) $
+        \npp ->
+        let netPartitionPlan =
+               npp >>=
+               refineNetPartitionPlan nodeJoinPlan nodeTopology
+        in
             testPraos' TestConfig
               { numCoreNodes
               , numSlots
               , nodeJoinPlan
               , nodeTopology
+              , netPartitionPlan
               }
                 seed
     ]
@@ -64,6 +74,7 @@ tests = testGroup "Dynamic chain generation"
       , numSlots
       , nodeJoinPlan = trivialNodeJoinPlan numCoreNodes
       , nodeTopology = meshNodeTopology numCoreNodes
+      , netPartitionPlan = Nothing
       }
 
     testPraos' :: TestConfig -> Seed -> Property
@@ -85,7 +96,13 @@ prop_simple_praos_convergence :: PraosParams
                               -> Property
 prop_simple_praos_convergence
   params@PraosParams{praosSecurityParam = k}
-  testConfig@TestConfig{numCoreNodes, numSlots, nodeJoinPlan} seed =
+  testConfig@TestConfig
+    { numCoreNodes
+    , numSlots
+    , nodeJoinPlan
+    , netPartitionPlan
+    }
+  seed =
     counterexample (tracesToDot testOutputNodes) $
     label lbl $
     counterexample lbl $
@@ -97,6 +114,6 @@ prop_simple_praos_convergence
             testConfig seed
 
     schedule = leaderScheduleFromTrace numSlots testOutputNodes
-    lbl = if tooCrowded k nodeJoinPlan schedule
+    lbl = if tooCrowded k nodeJoinPlan netPartitionPlan schedule
           then "too crowded"
           else "not too crowded"

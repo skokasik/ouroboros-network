@@ -23,6 +23,7 @@ import           Ouroboros.Consensus.Util.Random
 
 import           Test.Dynamic.General
 import           Test.Dynamic.Util
+import           Test.Dynamic.Util.NetPartitionPlan
 import           Test.Dynamic.Util.NodeJoinPlan
 import           Test.Dynamic.Util.NodeTopology
 
@@ -52,12 +53,26 @@ tests = testGroup "Dynamic chain generation"
             shrinkNodeTopology $
         \nodeTopology ->
         forAllShrink
-            (genLeaderSchedule k numSlots numCoreNodes nodeJoinPlan)
+            (Just <$> genNetPartitionPlan numCoreNodes numSlots)
+            (liftShrink shrinkNetPartitionPlan) $
+        \npp ->
+        let netPartitionPlan =
+               npp >>=
+               refineNetPartitionPlan nodeJoinPlan nodeTopology
+        in
+        forAllShrink
+            (genLeaderSchedule k
+                 numSlots numCoreNodes nodeJoinPlan netPartitionPlan)
             (shrinkLeaderSchedule numSlots) $
         \schedule ->
             prop_simple_leader_schedule_convergence
-                params
-                TestConfig{numCoreNodes, numSlots, nodeJoinPlan, nodeTopology}
+                params TestConfig
+                  { numCoreNodes
+                  , numSlots
+                  , nodeJoinPlan
+                  , nodeTopology
+                  , netPartitionPlan
+                  }
                 schedule seed
 
 prop_simple_leader_schedule_convergence :: PraosParams
@@ -85,9 +100,12 @@ genLeaderSchedule :: SecurityParam
                   -> NumSlots
                   -> NumCoreNodes
                   -> NodeJoinPlan
+                  -> Maybe RefinedNetPartitionPlan
                   -> Gen LeaderSchedule
-genLeaderSchedule k (NumSlots numSlots) (NumCoreNodes numCoreNodes) nodeJoinPlan =
-    flip suchThat (not . tooCrowded k nodeJoinPlan) $ do
+genLeaderSchedule k
+  (NumSlots numSlots) (NumCoreNodes numCoreNodes)
+  nodeJoinPlan netPartitionPlan =
+    flip suchThat ok $ do
         leaders <- replicateM numSlots $ frequency
             [ ( 4, pick 0)
             , ( 2, pick 1)
@@ -96,6 +114,9 @@ genLeaderSchedule k (NumSlots numSlots) (NumCoreNodes numCoreNodes) nodeJoinPlan
             ]
         return $ LeaderSchedule $ Map.fromList $ zip [0..] leaders
   where
+    ok :: LeaderSchedule -> Bool
+    ok = not . tooCrowded k nodeJoinPlan netPartitionPlan
+
     pick :: Int -> Gen [CoreNodeId]
     pick = go [0 .. numCoreNodes - 1]
       where

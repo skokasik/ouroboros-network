@@ -9,6 +9,7 @@ module Test.Dynamic.Util.NodeJoinPlan
   , nodeIdJoinSlot
   , shrinkNodeJoinPlan
   , trivialNodeJoinPlan
+  , numCoreNodesNodeJoinPlan
   ) where
 
 import qualified Data.List as List
@@ -121,3 +122,6 @@ nodeIdJoinSlot ::
 nodeIdJoinSlot nodeJoinPlan@(NodeJoinPlan m) ni = case ni of
     CoreId cni -> coreNodeIdJoinSlot nodeJoinPlan (CoreNodeId cni)
     _          -> error $ "not found: " <> condense (ni, Map.toList m)
+
+numCoreNodesNodeJoinPlan :: NodeJoinPlan -> NumCoreNodes
+numCoreNodesNodeJoinPlan (NodeJoinPlan m) = NumCoreNodes (Map.size m)

@@ -54,6 +54,7 @@ import qualified Test.Util.MockChain as Chain
 import           Test.Dynamic.Network (NodeOutput (..))
 import           Test.Dynamic.Util.Expectations (NumBlocks (..),
                      determineForkLength)
+import           Test.Dynamic.Util.NetPartitionPlan (RefinedNetPartitionPlan)
 import           Test.Dynamic.Util.NodeJoinPlan (NodeJoinPlan)
 
 {-------------------------------------------------------------------------------
@@ -73,34 +74,17 @@ prop_common_prefix :: forall b. (HasHeader b, Condense b, Eq b)
 prop_common_prefix l x y = go x y .&&. go y x
   where
     go c d =
-        let (l', c') = findPrefix c d
-            e        = "after dropping "
-                 <> show l'
-                 <> " blocks from "
-                 <> showChain c
-                 <> ",\n\nthe resulting "
-                 <> showChain c'
-                 <> "\n\nis a prefix of "
-                 <> showChain d
-                 <> ",\n\nbut only "
-                 <> show l
-                 <> " block(s) should have been necessary"
+        let (l', _) = findPrefix c d
+            e        =
+                "had to drop " <> show l' <> " block(s) from a chain" <>
+                " to reach a common prefix," <>
+                " exceeding the expected " <> show l
         in  counterexample e $ l' <= l
 
     findPrefix c' d
         | c' `Chain.isPrefixOf` d = (0, c')
         | otherwise         = let (l', c'') = findPrefix (Chain.dropLastBlocks 1 c') d
                               in  (l' + 1, c'')
-
-    showChain :: Chain b -> String
-    showChain c = condense c
-                  <> "\n(length "
-                  <> show (Chain.length c)
-                  <> case Chain.lastSlot c of
-                        Nothing -> ")"
-                        Just s  ->    ", last slot "
-                                   <> show (unSlotNo s)
-                                   <> ")"
 
 {-------------------------------------------------------------------------------
   Generation of a dot-file to represent the trace as a graph
@@ -251,10 +235,16 @@ leaderScheduleFromTrace (NumSlots numSlots) = LeaderSchedule .
         | nid `elem` xs = xs
         | otherwise     = nid : xs
 
-tooCrowded :: SecurityParam -> NodeJoinPlan -> LeaderSchedule -> Bool
-tooCrowded k nodeJoinPlan schedule = maxForkLength > maxRollbacks k
+tooCrowded ::
+     SecurityParam
+  -> NodeJoinPlan
+  -> Maybe RefinedNetPartitionPlan
+  -> LeaderSchedule
+  -> Bool
+tooCrowded k nodeJoinPlan rnpp schedule = maxForkLength > maxRollbacks k
   where
-    NumBlocks maxForkLength = determineForkLength k nodeJoinPlan schedule
+    NumBlocks maxForkLength =
+        determineForkLength k nodeJoinPlan rnpp schedule
 
 roundRobinLeaderSchedule :: NumCoreNodes -> NumSlots -> LeaderSchedule
 roundRobinLeaderSchedule (NumCoreNodes n) (NumSlots t) = LeaderSchedule $

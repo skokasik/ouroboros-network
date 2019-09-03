@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE NamedFieldPuns      #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -13,8 +14,11 @@ module Test.Dynamic.General (
   , TestOutput (..)
   ) where
 
-import           Control.Monad (join)
+import qualified Control.Arrow as Arrow
+import           Control.Monad (guard, join)
 import qualified Data.Map as Map
+import           Data.Maybe (isJust)
+import qualified Data.Set as Set
 import           Data.Word (Word64)
 import           Test.QuickCheck
 
@@ -41,6 +45,7 @@ import qualified Ouroboros.Storage.FS.Sim.MockFS as Mock
 import           Test.Dynamic.Network
 import           Test.Dynamic.TxGen
 import           Test.Dynamic.Util
+import           Test.Dynamic.Util.NetPartitionPlan
 import           Test.Dynamic.Util.NodeJoinPlan
 import           Test.Dynamic.Util.NodeTopology
 
@@ -52,10 +57,11 @@ import           Test.Util.Range
 -------------------------------------------------------------------------------}
 
 data TestConfig = TestConfig
-  { numCoreNodes :: !NumCoreNodes
-  , numSlots     :: !NumSlots
-  , nodeJoinPlan :: !NodeJoinPlan
-  , nodeTopology :: !NodeTopology
+  { numCoreNodes     :: !NumCoreNodes
+  , numSlots         :: !NumSlots
+  , nodeJoinPlan     :: !NodeJoinPlan
+  , nodeTopology     :: !NodeTopology
+  , netPartitionPlan :: !(Maybe RefinedNetPartitionPlan)
   }
   deriving (Show)
 
@@ -63,7 +69,18 @@ genTestConfig :: NumCoreNodes -> NumSlots -> Gen TestConfig
 genTestConfig numCoreNodes numSlots = do
     nodeJoinPlan <- genNodeJoinPlan numCoreNodes numSlots
     nodeTopology <- genNodeTopology numCoreNodes
-    pure TestConfig{numCoreNodes, numSlots, nodeJoinPlan, nodeTopology}
+    npp <- sized $ \case
+      0 -> pure Nothing
+      _ -> Just <$> genNetPartitionPlan numCoreNodes numSlots
+    let netPartitionPlan =
+            refineNetPartitionPlan nodeJoinPlan nodeTopology =<< npp
+    pure TestConfig
+      { numCoreNodes
+      , numSlots
+      , nodeJoinPlan
+      , nodeTopology
+      , netPartitionPlan
+      }
 
 -- | Shrink without changing the number of nodes or slots
 shrinkTestConfig :: TestConfig -> [TestConfig]
@@ -76,21 +93,29 @@ shrinkTestConfig testConfig@TestConfig{nodeJoinPlan, nodeTopology} =
 
 -- | Shrink, including the number of nodes and slots
 shrinkTestConfigFreely :: TestConfig -> [TestConfig]
-shrinkTestConfigFreely
-  TestConfig{numCoreNodes, numSlots, nodeJoinPlan, nodeTopology} =
+shrinkTestConfigFreely TestConfig
+  { numCoreNodes
+  , numSlots
+  , nodeJoinPlan
+  , nodeTopology
+  , netPartitionPlan
+  } =
     tail $   -- drop the identity result
     [ TestConfig
         { numCoreNodes = n'
         , numSlots = t'
         , nodeJoinPlan = p'
         , nodeTopology = top'
+        , netPartitionPlan = refineNetPartitionPlan p' top' =<< npp'
         }
     | n' <- idAnd shrink numCoreNodes
     , t' <- idAnd shrink numSlots
     , let adjustedP = adjustedNodeJoinPlan n' t'
     , let adjustedTop = adjustedNodeTopology n'
+    , let adjustedNpp = adjustedNetPartitionPlan n' t'
     , p' <- idAnd shrinkNodeJoinPlan adjustedP
     , top' <- idAnd shrinkNodeTopology adjustedTop
+    , npp' <- idAnd (liftShrink shrinkNetPartitionPlan) adjustedNpp
     ]
   where
     idAnd :: forall a. (a -> [a]) -> a -> [a]
@@ -111,6 +136,20 @@ shrinkTestConfigFreely
         NodeTopology $ Map.filterWithKey (\(CoreNodeId i) _ -> i < n') m
       where
         NodeTopology m = nodeTopology
+
+    adjustedNetPartitionPlan (NumCoreNodes n') (NumSlots t') = do
+        npp <- fmap getRefinedNetPartitionPlan netPartitionPlan
+        let minor' =
+              Set.filter (\(CoreNodeId nid) -> nid < n') (nppMinor npp)
+            i = nppInterval npp
+            lastSlot = SlotNo (pred (toEnum t'))
+        guard $ n' /= Set.size minor'
+        guard $ 0  /= Set.size minor'
+        guard $ lastSlot >= fst i
+        pure NetPartitionPlan
+          { nppMinor    = minor'
+          , nppInterval = min lastSlot `Arrow.second` i
+          }
 
 instance Arbitrary TestConfig where
   arbitrary = join $ genTestConfig <$> arbitrary <*> arbitrary
@@ -135,8 +174,13 @@ runTestNetwork ::
   -> TestConfig
   -> Seed
   -> TestOutput blk
-runTestNetwork pInfo
-  TestConfig{numCoreNodes, numSlots, nodeJoinPlan, nodeTopology}
+runTestNetwork pInfo TestConfig
+    { numCoreNodes
+    , numSlots
+    , nodeJoinPlan
+    , nodeTopology
+    , netPartitionPlan
+    }
   seed = runSimOrThrow $ do
     registry  <- unsafeNewRegistry
     testBtime <- newTestBlockchainTime registry numSlots slotLen
@@ -146,6 +190,7 @@ runTestNetwork pInfo
       numCoreNodes
       nodeJoinPlan
       nodeTopology
+      netPartitionPlan
       pInfo
       (seedToChaCha seed)
       slotLen
@@ -175,15 +220,24 @@ prop_general ::
   -> LeaderSchedule
   -> TestOutput blk
   -> Property
-prop_general k TestConfig{numSlots, nodeJoinPlan, nodeTopology} schedule
+prop_general k TestConfig
+  { numSlots
+  , nodeJoinPlan
+  , nodeTopology
+  , netPartitionPlan
+  }
+  schedule
   TestOutput{testOutputNodes} =
     counterexample ("nodeJoinPlan: " <> condense nodeJoinPlan) $
-    counterexample ("schedule: " <> condense schedule) $
-    counterexample ("nodeChains: " <> unlines ("" : map (\x -> "  " <> condense x) (Map.toList nodeChains))) $
     counterexample ("nodeTopology: " <> condense nodeTopology) $
+    counterexample ("netPartitionPlan: " <> condense netPartitionPlan) $
+    counterexample ("schedule: " <> condense schedule) $
+    tabulate "expected consensus" [show (0 == maxForkLength)] $
     tabulate "shortestLength" [show (rangeK k (shortestLength nodeChains))] $
     tabulate "floor(4 * lastJoinSlot / numSlots)" [show lastJoinSlot] $
     tabulate "bottleneckSizeNodeTopology" [show (bottleneckSizeNodeTopology nodeTopology)] $
+    tabulate "network partitioned" [show (isJust netPartitionPlan)] $
+    counterexample ("nodeChains: " <> unlines ("" : map (\x -> "  " <> condense x) (Map.toList nodeChains))) $
     prop_all_common_prefix
         maxForkLength
         (Map.elems nodeChains) .&&.
@@ -191,7 +245,8 @@ prop_general k TestConfig{numSlots, nodeJoinPlan, nodeTopology} schedule
       [ fileHandleLeakCheck nid nodeInfo
       | (nid, nodeInfo) <- Map.toList nodeInfos ]
   where
-    NumBlocks maxForkLength = determineForkLength k nodeJoinPlan schedule
+    NumBlocks maxForkLength =
+        determineForkLength k nodeJoinPlan netPartitionPlan schedule
 
     nodeChains = nodeOutputFinalChain <$> testOutputNodes
     nodeInfos  = nodeOutputNodeInfo   <$> testOutputNodes
