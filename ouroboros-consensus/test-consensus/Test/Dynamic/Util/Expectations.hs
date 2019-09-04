@@ -103,7 +103,7 @@ determineForkLength ::
 determineForkLength k (NodeJoinPlan joinPlan) (LeaderSchedule sched) =
     prj $ foldl' step initial (Map.toAscList sched)
   where
-    prj Acc{maxForkLength} = NumBlocks maxForkLength
+    prj = NumBlocks . maxForkLength
 
     -- assume the network begins in consensus (eg all nodes start at Genesis)
     initial = Acc
