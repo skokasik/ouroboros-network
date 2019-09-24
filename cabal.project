@@ -7,6 +7,7 @@ packages: ./typed-protocols
           ./io-sim
           ./io-sim-classes
           ./ntp
+          ./Win32-named-pipes
 
 constraints:
   graphviz == 2999.20.0.3
