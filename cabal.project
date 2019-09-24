@@ -12,6 +12,9 @@ packages: ./typed-protocols
 constraints:
   graphviz == 2999.20.0.3
 
+package Win32-named-pipes
+  tests: True
+
 package typed-protocols
   tests: True
 
