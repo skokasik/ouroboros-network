@@ -33,6 +33,10 @@ library
                        process         >=1.6 && <1.7,
                        time            >=1.6 && <1.10
 
+  if os(windows)
+    build-depends:     Win32           >= 2.5.4.1 && <2.9,
+                       Win32-network   >=0.1 && <0.2
+
   ghc-options:         -Wall
                        -Wno-unticked-promoted-constructors
                        -fno-ignore-asserts
@@ -92,6 +96,10 @@ test-suite test-network-mux
                        tasty-quickcheck,
                        tasty-hunit,
                        time
+
+  if os(windows)
+    build-depends:     Win32           >= 2.5.4.1 && <2.9,
+                       Win32-network   >=0.1 && <0.2
 
   ghc-options:         -Wall
                        -Wno-unticked-promoted-constructors
