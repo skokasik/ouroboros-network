@@ -22,16 +22,16 @@ import qualified Network.Mux.Bearer.Socket as Mx
 data Snocket channel addr ptcl = Snocket {
     getLocalAddr  :: channel -> IO addr
   , getRemoteAddr :: channel -> IO addr
-  , close         :: channel -> IO ()
   , connect       :: Either
                       (addr -> IO channel)
                       (channel -> addr -> IO channel)
     -- ^ either named pipe connect style function or Berkeley socket connect
     -- style
-  , toBearer      :: Tracer IO (MuxTrace ptcl) -> channel -> IO (MuxBearer ptcl IO)
   , bind          :: channel -> addr -> IO ()
-  , listen        :: channel -> IO ()
   , accept        :: channel -> IO (channel, addr)
+  , listen        :: channel -> IO ()
+  , close         :: channel -> IO ()
+  , toBearer      :: Tracer IO (MuxTrace ptcl) -> channel -> IO (MuxBearer ptcl IO)
   }
 
 -- | Create a Snocket for the given Socket.Family
@@ -43,8 +43,6 @@ socketSnocket
 socketSnocket family = Snocket {
       getLocalAddr   = Socket.getSocketName
     , getRemoteAddr  = Socket.getPeerName
-    , close          = Socket.close
-    , accept         = Socket.accept
     , connect        = Right $ \s a -> s <$ Socket.connect s a
     , bind = \sd a -> do
         when (family == Socket.AF_INET ||
@@ -60,7 +58,9 @@ socketSnocket family = Snocket {
           $ Socket.setSocketOption sd Socket.IPv6Only 1
 
         Socket.bind sd a
+    , accept         = Socket.accept
     , listen = \s -> Socket.listen s 10
+    , close          = Socket.close
     , toBearer = Mx.socketAsMuxBearer
     }
 
@@ -71,11 +71,11 @@ rawSocketSnocket
 rawSocketSnocket = Snocket {
     getLocalAddr  = Socket.getSocketName
   , getRemoteAddr = Socket.getPeerName
-  , close         = Socket.close
   , connect       = Right $ \s a -> s <$ Socket.connect s a
-  , accept        = Socket.accept
   , bind          = Socket.bind
+  , accept        = Socket.accept
   , listen        = flip Socket.listen 10
+  , close         = Socket.close
   , toBearer      = Mx.socketAsMuxBearer
   }
       
@@ -90,7 +90,16 @@ namedPipeSnocket
 namedPipeSnocket name = Snocket {
       getLocalAddr  = \_ -> return name
     , getRemoteAddr = \_ -> return name
-    , close    = Win32.NamedPipes.closePipe
+    , connect  = Left $ \pipeName ->
+        Win32.createFile pipeName
+                         (Win32.gENERIC_READ
+                           .|. Win32.gENERIC_WRITE)
+                         Win32.fILE_SHARE_NONE
+                         Nothing
+                         Win32.oPEN_EXISTING
+                         Win32.fILE_ATTRIBUTE_NORMAL
+                         Nothing
+    , bind     = \_ _ -> pure ()
     , accept   = \_ -> do
         hpipe <- Win32.NamedPipes.createNamedPipe
                   name
@@ -104,17 +113,8 @@ namedPipeSnocket name = Snocket {
                   Nothing
         Win32.NamedPipes.connectNamedPipe hpipe Nothing
         pure (hpipe, name)
-    , connect  = Left $ \pipeName ->
-        Win32.createFile pipeName
-                         (Win32.gENERIC_READ
-                           .|. Win32.gENERIC_WRITE)
-                         Win32.fILE_SHARE_NONE
-                         Nothing
-                         Win32.oPEN_EXISTING
-                         Win32.fILE_ATTRIBUTE_NORMAL
-                         Nothing
-    , bind     = \_ _ -> pure ()
     , listen   = \h -> Win32.NamedPipes.connectNamedPipe h Nothing
+    , close    = Win32.NamedPipes.closePipe
     -- TODO
     , toBearer = \_ -> error "TODO"
     }
