@@ -1,7 +1,7 @@
-#include "windows_cconv.h"
 #include <fcntl.h>
 #include <windows.h>
 
+{-# LANGUAGE CPP              #-}
 {-# LANGUAGE BangPatterns     #-}
 {-# LANGUAGE CApiFFI          #-}
 {-# LANGUAGE InterruptibleFFI #-}
@@ -18,6 +18,7 @@ module System.Win32.NamedPipes (
 
     -- ** Paramater types
     LPSECURITY_ATTRIBUTES,
+    OVERLAPPED (..),
     OpenMode,
     pIPE_ACCESS_DUPLEX,
     pIPE_ACCESS_INBOUND,
@@ -35,6 +36,8 @@ module System.Win32.NamedPipes (
     readPipe,
     pGetLine,
     writePipe,
+    flushPipe,
+    disconnectPipe,
 
     -- * Client and server APIs
     pipeToHandle,
@@ -55,11 +58,45 @@ import GHC.IO.Handle.FD (mkHandleFromFD)
 import Foreign hiding (void)
 import Foreign.C
 import System.Win32.Types
-import System.Win32.File hiding ( win32_ReadFile, c_ReadFile
+import System.Win32.File hiding ( LPOVERLAPPED
+                                , win32_ReadFile, c_ReadFile
                                 , win32_WriteFile, c_WriteFile
+                                , c_FlushFileBuffers
                                 )
 
 
+
+#if MIN_VERSION_Win32 (2, 7, 0)
+-- OVERLAPPED data type is imported from 'System.Win32.File'
+#else
+data OVERLAPPED
+  = OVERLAPPED { ovl_internal     :: ULONG_PTR
+               , ovl_internalHigh :: ULONG_PTR
+               , ovl_offset       :: DWORD
+               , ovl_offsetHigh   :: DWORD
+               , ovl_hEvent       :: HANDLE
+               } deriving (Show)
+
+instance Storable OVERLAPPED where
+  sizeOf = const ((32))
+  alignment _ = 8
+  poke buf ad = do
+      ((\hsc_ptr -> pokeByteOff hsc_ptr 0)) buf (ovl_internal     ad)
+      ((\hsc_ptr -> pokeByteOff hsc_ptr 8)) buf (ovl_internalHigh ad)
+      ((\hsc_ptr -> pokeByteOff hsc_ptr 16)) buf (ovl_offset       ad)
+      ((\hsc_ptr -> pokeByteOff hsc_ptr 20)) buf (ovl_offsetHigh   ad)
+      ((\hsc_ptr -> pokeByteOff hsc_ptr 24)) buf (ovl_hEvent       ad)
+
+  peek buf = do
+      intnl      <- ((\hsc_ptr -> peekByteOff hsc_ptr 0)) buf
+      intnl_high <- ((\hsc_ptr -> peekByteOff hsc_ptr 8)) buf
+      off        <- ((\hsc_ptr -> peekByteOff hsc_ptr 16)) buf
+      off_high   <- ((\hsc_ptr -> peekByteOff hsc_ptr 20)) buf
+      hevnt      <- ((\hsc_ptr -> peekByteOff hsc_ptr 24)) buf
+      return $ OVERLAPPED intnl intnl_high off off_high hevnt
+
+type LPOVERLAPPED = Ptr OVERLAPPED
+#endif
 
 -- | The named pipe open mode.
 --
@@ -221,11 +258,12 @@ closePipe = closeHandle
 -- Read from a pipe
 --
 
-win32_ReadFile :: HANDLE -> Ptr a -> DWORD -> Maybe LPOVERLAPPED -> IO DWORD
-win32_ReadFile h buf n mb_over =
+
+win32_ReadFile :: HANDLE -> Ptr a -> DWORD -> Maybe OVERLAPPED -> IO DWORD
+win32_ReadFile h buf n mb_ovl =
   alloca $ \ p_n -> do
-  failIfFalse_ "ReadFile" $ c_ReadFile h buf n p_n (maybePtr mb_over)
-  peek p_n
+    maybeWith with mb_ovl (failIfFalse_ "ReadFile" . c_ReadFile h buf n p_n)
+    peek p_n
 
 foreign import ccall interruptible "windows.h ReadFile"
   c_ReadFile :: HANDLE -> Ptr a -> DWORD -> Ptr DWORD -> LPOVERLAPPED -> IO Bool
@@ -262,11 +300,11 @@ pGetLine h = go ""
 win32_WriteFile :: HANDLE
                 -> Ptr a
                 -> DWORD
-                -> Maybe LPOVERLAPPED
+                -> LPOVERLAPPED
                 -> IO DWORD
-win32_WriteFile h buf n mb_over =
+win32_WriteFile h buf n over =
   alloca $ \ p_n -> do
-  failIfFalse_ "WriteFile" $ c_WriteFile h buf n p_n (maybePtr mb_over)
+  failIfFalse_ "WriteFile" $ c_WriteFile h buf n p_n over
   peek p_n
 
 foreign import ccall interruptible "windows.h WriteFile"
@@ -276,7 +314,23 @@ foreign import ccall interruptible "windows.h WriteFile"
 --
 writePipe :: HANDLE
           -> ByteString
+          -> Maybe OVERLAPPED
           -> IO ()
-writePipe h bs = BS.unsafeUseAsCStringLen bs $
+writePipe h bs mb_ovl = BS.unsafeUseAsCStringLen bs $
     \(str, len) ->
-      void $ win32_WriteFile h (castPtr str) (fromIntegral len) Nothing
+        maybeWith with mb_ovl 
+          (void . win32_WriteFile h (castPtr str) (fromIntegral len))
+
+foreign import ccall interruptible "windows.h FlushFileBuffers"
+  c_FlushFileBuffers :: HANDLE -> IO Bool
+
+flushPipe :: HANDLE -> IO ()
+flushPipe = failIfFalse_ "FlushFileBuffers" . c_FlushFileBuffers
+
+foreign import ccall interruptible "windows.h DisconnectNamedPipe"
+  c_DisconnectNamedPipe :: HANDLE -> IO Bool
+
+disconnectPipe :: HANDLE -> IO ()
+disconnectPipe = failIfFalse_ "DisconnectNamedPipe" . c_DisconnectNamedPipe
+
+

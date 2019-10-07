@@ -62,13 +62,13 @@ encodeMsg msg = BSC.pack (msg ++ "\n")
 
 serverLoop :: HANDLE -> IO ()
 serverLoop hpipe = do
-  _ <- writePipe hpipe (encodeMsg "Hi! >")
+  _ <- writePipe hpipe (encodeMsg "Hi! >") Nothing
   putStrLn "Sent prompt, awaiting reply"
   resp <- pGetLine hpipe
   putStrLn $ "received: " ++ show resp
   let reply = "reversed: " ++ show (reverse resp)
   putStrLn $ "replying: " ++ show reply
-  _ <- writePipe hpipe (encodeMsg reply)
+  _ <- writePipe hpipe (encodeMsg reply) Nothing
   serverLoop hpipe
 
 client :: IO ()
@@ -93,7 +93,7 @@ clientLoop hpipe = do
   case reply of
     "quit" -> return ()
     _      -> do putStrLn $ "sending reply: " ++ show reply
-                 _ <- writePipe hpipe (encodeMsg reply)
+                 _ <- writePipe hpipe (encodeMsg reply) Nothing
                  putStrLn "reply sent"
                  putStrLn "reply flushed"
                  resp <- pGetLine hpipe
