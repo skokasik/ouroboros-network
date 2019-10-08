@@ -1,5 +1,8 @@
 {-# LANGUAGE ConstraintKinds            #-}
+{-# LANGUAGE DeriveAnyClass             #-}
+{-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveGeneric              #-}
+{-# LANGUAGE DerivingStrategies         #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE FunctionalDependencies     #-}
@@ -12,9 +15,10 @@
 {-# LANGUAGE UndecidableInstances       #-}
 
 module Ouroboros.Consensus.Protocol.Abstract (
-    -- * Abstract definition of the Ouroboros protocl
+    -- * Abstract definition of the Ouroboros protocol
     OuroborosTag(..)
   , SecurityParam(..)
+  , IsALeaderOrNot(..)
     -- * State monad for Ouroboros state
   , HasNodeState
   , HasNodeState_(..)
@@ -213,7 +217,16 @@ class ( Show (ChainState    p)
 -- NOTE: This talks about the number of /blocks/ we can roll back, not
 -- the number of /slots/.
 newtype SecurityParam = SecurityParam { maxRollbacks :: Word64 }
-  deriving (Show, Eq, Generic, NoUnexpectedThunks)
+  deriving stock    (Show, Generic)
+  deriving newtype  (Eq)
+  deriving anyclass (NoUnexpectedThunks)
+
+-- | Isomorphic to 'Either', used to store a different payload depending on
+-- whether the node can be a leader or not.
+data IsALeaderOrNot no yes
+  = IsNotALeader !no
+  | IsALeader    !yes
+  deriving (Generic, NoUnexpectedThunks, Functor)
 
 {-------------------------------------------------------------------------------
   State monad
@@ -238,7 +251,7 @@ instance HasNodeState_ s m => HasNodeState_ s (ChaChaT m) where
 -------------------------------------------------------------------------------}
 
 newtype NodeStateT_ s m a = NodeStateT { unNodeStateT :: StateT s m a }
-  deriving (Functor, Applicative, Monad, MonadTrans)
+  deriving newtype (Functor, Applicative, Monad, MonadTrans)
 
 type NodeStateT p = NodeStateT_ (NodeState p)
 

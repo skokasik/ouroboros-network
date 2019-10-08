@@ -21,7 +21,7 @@ import           Cardano.Prelude (NoUnexpectedThunks)
 
 import           Ouroboros.Network.Block (SlotNo (..))
 
-import           Ouroboros.Consensus.NodeId (CoreNodeId (..), fromCoreNodeId)
+import           Ouroboros.Consensus.NodeId (CoreNodeId (..), NodeId (..))
 import           Ouroboros.Consensus.Protocol.Abstract
 import           Ouroboros.Consensus.Util (Empty)
 import           Ouroboros.Consensus.Util.Condense (Condense (..))
@@ -31,9 +31,7 @@ newtype LeaderSchedule = LeaderSchedule {getLeaderSchedule :: Map SlotNo [CoreNo
     deriving anyclass (NoUnexpectedThunks)
 
 instance Condense LeaderSchedule where
-    condense (LeaderSchedule m) = condense
-                                $ map (\(s, ls) -> (s, map fromCoreNodeId ls))
-                                $ Map.toList m
+    condense (LeaderSchedule m) = condense $ Map.toList m
 
 -- | Extension of protocol @p@ by a static leader schedule.
 data WithLeaderSchedule p
@@ -50,7 +48,7 @@ instance OuroborosTag p => OuroborosTag (WithLeaderSchedule p) where
   data NodeConfig (WithLeaderSchedule p) = WLSNodeConfig
     { lsNodeConfigSchedule :: !LeaderSchedule
     , lsNodeConfigP        :: !(NodeConfig p)
-    , lsNodeConfigNodeId   :: !CoreNodeId
+    , lsNodeConfigNodeId   :: !NodeId
     }
     deriving (Generic)
 
@@ -59,11 +57,15 @@ instance OuroborosTag p => OuroborosTag (WithLeaderSchedule p) where
   protocolSecurityParam WLSNodeConfig{..} = protocolSecurityParam lsNodeConfigP
 
   checkIsLeader WLSNodeConfig{..} slot _ _ = return $
-    case Map.lookup slot $ getLeaderSchedule lsNodeConfigSchedule of
-        Nothing                              -> Nothing
-        Just nids
-            | lsNodeConfigNodeId `elem` nids -> Just ()
-            | otherwise                      -> Nothing
+      case lsNodeConfigNodeId of
+        RelayId _rid -> Nothing
+        CoreId   cid -> case Map.lookup slot sched of
+          Nothing             -> Nothing
+          Just cids
+            | cid `elem` cids -> Just ()
+            | otherwise       -> Nothing
+    where
+      sched = getLeaderSchedule lsNodeConfigSchedule
 
   applyChainState _ _ _ _ = return ()
   rewindChainState _ _ _  = Just ()

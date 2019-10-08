@@ -6,6 +6,7 @@
 {-# LANGUAGE FlexibleContexts        #-}
 {-# LANGUAGE FlexibleInstances       #-}
 {-# LANGUAGE MultiParamTypeClasses   #-}
+{-# LANGUAGE NamedFieldPuns          #-}
 {-# LANGUAGE RecordWildCards         #-}
 {-# LANGUAGE ScopedTypeVariables     #-}
 {-# LANGUAGE StandaloneDeriving      #-}
@@ -20,6 +21,7 @@ module Ouroboros.Consensus.Protocol.Praos (
   , PraosFields(..)
   , PraosExtraFields(..)
   , PraosParams(..)
+  , PraosIsLeader(..)
   , PraosNodeState(..)
   , forgePraosFields
     -- * Tags
@@ -62,7 +64,7 @@ import           Cardano.Prelude (NoUnexpectedThunks (..))
 import           Ouroboros.Network.Block (HasHeader (..), SlotNo (..))
 import           Ouroboros.Network.Point (WithOrigin (At))
 
-import           Ouroboros.Consensus.NodeId (CoreNodeId (..), NodeId (..))
+import           Ouroboros.Consensus.NodeId (CoreNodeId (..), RelayNodeId)
 import           Ouroboros.Consensus.Protocol.Abstract
 import           Ouroboros.Consensus.Protocol.Signed
 import qualified Ouroboros.Consensus.Util.AnchoredFragment as AF
@@ -163,7 +165,7 @@ data PraosProof c = PraosProof {
 
 data PraosValidationError c =
       PraosInvalidSlot SlotNo SlotNo
-    | PraosUnknownCoreId Int
+    | PraosUnknownCoreId CoreNodeId
     | PraosInvalidSig String (VerKeyKES (PraosKES c)) Natural (SigKES (PraosKES c))
     | PraosInvalidCert (VerKeyVRF (PraosVRF c)) Encoding Natural (CertVRF (PraosVRF c))
     | PraosInsufficientStake Double Natural
@@ -205,14 +207,24 @@ newtype PraosNodeState c = PraosNodeState {
 instance PraosCrypto c => NoUnexpectedThunks (PraosNodeState c) where
   showTypeOf _ = show $ typeRep (Proxy @(PraosNodeState c))
 
+type PraosIsALeaderOrNot c = IsALeaderOrNot RelayNodeId (PraosIsLeader c)
+
+data PraosIsLeader c = PraosIsLeader {
+      praosCoreNodeId :: !CoreNodeId
+    , praosSignKeyVRF :: !(SignKeyVRF (PraosVRF c))
+    }
+  deriving (Generic)
+
+instance PraosCrypto c => NoUnexpectedThunks (PraosIsLeader c)
+  -- use generic instance
+
 instance PraosCrypto c => OuroborosTag (Praos c) where
   data NodeConfig (Praos c) = PraosNodeConfig
-    { praosParams        :: !PraosParams
-    , praosInitialEta    :: !Natural
-    , praosInitialStake  :: !StakeDist
-    , praosNodeId        :: !NodeId
-    , praosSignKeyVRF    :: !(SignKeyVRF (PraosVRF c))
-    , praosVerKeys       :: !(IntMap (VerKeyKES (PraosKES c), VerKeyVRF (PraosVRF c)))
+    { praosParams       :: !PraosParams
+    , praosInitialEta   :: !Natural
+    , praosInitialStake :: !StakeDist
+    , praosIsLeader     :: !(PraosIsALeaderOrNot c)
+    , praosVerKeys      :: !(IntMap (VerKeyKES (PraosKES c), VerKeyVRF (PraosVRF c)))
     }
     deriving (Generic)
 
@@ -226,17 +238,17 @@ instance PraosCrypto c => OuroborosTag (Praos c) where
   type ChainState      (Praos c) = [BlockInfo c]
 
   checkIsLeader cfg@PraosNodeConfig{..} slot _u cs =
-    case praosNodeId of
-        RelayId _  -> return Nothing
-        CoreId nid -> do
-          let (rho', y', t) = rhoYT cfg cs slot nid
+    case praosIsLeader of
+        IsNotALeader _ -> return Nothing
+        IsALeader PraosIsLeader { praosCoreNodeId = cid , praosSignKeyVRF } -> do
+          let (rho', y', t) = rhoYT cfg cs slot cid
           rho <- evalCertified rho' praosSignKeyVRF
           y   <- evalCertified y'   praosSignKeyVRF
           return $ if fromIntegral (certifiedNatural y) < t
               then Just PraosProof {
                        praosProofRho  = rho
                      , praosProofY    = y
-                     , praosLeader    = CoreNodeId nid
+                     , praosLeader    = cid
                      , praosProofSlot = slot
                      }
               else Nothing
@@ -246,7 +258,7 @@ instance PraosCrypto c => OuroborosTag (Praos c) where
         PraosExtraFields{..} = praosExtraFields
         toSign               = headerSigned b
         slot                 = blockSlot b
-        CoreNodeId nid       = praosCreator
+        cid                  = praosCreator
 
     -- check that the new block advances time
     case cs of
@@ -255,8 +267,8 @@ instance PraosCrypto c => OuroborosTag (Praos c) where
         _                      -> return ()
 
     -- check that block creator is a known core node
-    (vkKES, vkVRF) <- case IntMap.lookup nid praosVerKeys of
-        Nothing  -> throwError $ PraosUnknownCoreId nid
+    (vkKES, vkVRF) <- case IntMap.lookup (fromIntegral (unCoreNodeId cid)) praosVerKeys of
+        Nothing  -> throwError $ PraosUnknownCoreId cid
         Just vks -> return vks
 
     -- verify block signature
@@ -272,7 +284,7 @@ instance PraosCrypto c => OuroborosTag (Praos c) where
                                   (fromIntegral $ unSlotNo slot)
                                   (getSig praosSignature)
 
-    let (rho', y', t) = rhoYT cfg cs slot nid
+    let (rho', y', t) = rhoYT cfg cs slot cid
 
     -- verify rho proof
     unless (verifyCertified vkVRF rho' praosRho) $
@@ -388,27 +400,27 @@ leaderThreshold :: forall c. PraosCrypto c
                 => NodeConfig (Praos c)
                 -> [BlockInfo c]
                 -> SlotNo
-                -> Int
+                -> CoreNodeId
                 -> Double
-leaderThreshold st xs s n =
-    let a = stakeWithDefault 0 n $ infosStake st xs (slotEpoch st s)
+leaderThreshold st xs s cid =
+    let a = stakeWithDefault 0 cid $ infosStake st xs (slotEpoch st s)
     in  2 ^ (byteCount (Proxy :: Proxy (PraosHash c)) * 8) * phi st a
 
 rhoYT :: PraosCrypto c
       => NodeConfig (Praos c)
       -> [BlockInfo c]
       -> SlotNo
-      -> Int
+      -> CoreNodeId
       -> ( (Natural, SlotNo, VRFType)
          , (Natural, SlotNo, VRFType)
          , Double
          )
-rhoYT st xs s n =
+rhoYT st xs s cid =
     let e   = slotEpoch st s
         eta = infosEta st xs e
         rho = (eta, s, NONCE)
         y   = (eta, s, TEST)
-        t   = leaderThreshold st xs s n
+        t   = leaderThreshold st xs s cid
     in  (rho, y, t)
 
 {-------------------------------------------------------------------------------

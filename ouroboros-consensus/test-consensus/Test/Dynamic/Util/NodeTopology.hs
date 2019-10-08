@@ -44,7 +44,7 @@ import           Ouroboros.Consensus.Util.Orphans ()
 -- connected components during the execution, but the base topology is
 -- connected.
 --
-newtype NodeTopology = NodeTopology (Map CoreNodeId (Set CoreNodeId))
+newtype NodeTopology = NodeTopology (Map NodeId (Set NodeId))
   deriving (Eq, Show)
 
 instance Condense NodeTopology where

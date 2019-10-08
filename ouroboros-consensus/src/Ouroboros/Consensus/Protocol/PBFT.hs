@@ -19,7 +19,7 @@ module Ouroboros.Consensus.Protocol.PBFT (
   , PBftFields(..)
   , PBftParams(..)
   , PBftIsLeader(..)
-  , PBftIsLeaderOrNot(..)
+  , PBftIsALeaderOrNot
   , forgePBftFields
   , genesisKeyCoreNodeId
     -- * Classes
@@ -38,7 +38,6 @@ import qualified Data.Bimap as Bimap
 import           Data.Reflection (give)
 import qualified Data.Set as Set
 import           Data.Typeable (Proxy (..), Typeable)
-import           Data.Word (Word64)
 import           GHC.Generics (Generic)
 
 import qualified Cardano.Chain.Common as CC.Common
@@ -50,7 +49,9 @@ import           Ouroboros.Network.Block (HasHeader (..), SlotNo (..))
 import           Ouroboros.Network.Point (WithOrigin (At))
 
 import           Ouroboros.Consensus.Crypto.DSIGN.Cardano
-import           Ouroboros.Consensus.NodeId (CoreNodeId (..))
+import           Ouroboros.Consensus.Node.ProtocolInfo.Abstract
+                     (NumCoreNodes (..))
+import           Ouroboros.Consensus.NodeId (CoreNodeId (..), RelayNodeId)
 import           Ouroboros.Consensus.Protocol.Abstract
 import           Ouroboros.Consensus.Protocol.PBFT.ChainState (PBftChainState)
 import qualified Ouroboros.Consensus.Protocol.PBFT.ChainState as CS
@@ -132,7 +133,7 @@ data PBftParams = PBftParams {
       pbftSecurityParam      :: !SecurityParam
 
       -- | Number of core nodes
-    , pbftNumNodes           :: !Word64
+    , pbftNumCoreNodes       :: !NumCoreNodes
 
       -- | Signature threshold
       --
@@ -158,16 +159,13 @@ data PBftIsLeader c = PBftIsLeader {
 instance PBftCrypto c => NoUnexpectedThunks (PBftIsLeader c)
  -- use generic instance
 
-data PBftIsLeaderOrNot c
-  = PBftIsALeader !(PBftIsLeader c)
-  | PBftIsNotALeader
-  deriving (Generic, NoUnexpectedThunks)
+type PBftIsALeaderOrNot c = IsALeaderOrNot RelayNodeId (PBftIsLeader c)
 
 instance (PBftCrypto c, Typeable c) => OuroborosTag (PBft c) where
   -- | (Static) node configuration
   data NodeConfig (PBft c) = PBftNodeConfig {
         pbftParams   :: !PBftParams
-      , pbftIsLeader :: !(PBftIsLeaderOrNot c)
+      , pbftIsLeader :: !(PBftIsALeaderOrNot c)
       }
     deriving (Generic, NoUnexpectedThunks)
 
@@ -187,17 +185,20 @@ instance (PBftCrypto c, Typeable c) => OuroborosTag (PBft c) where
 
   checkIsLeader PBftNodeConfig{pbftIsLeader, pbftParams} (SlotNo n) _l _cs =
       case pbftIsLeader of
-        PBftIsNotALeader                           -> return Nothing
+        IsNotALeader _
+            -> return Nothing
 
         -- We are the slot leader based on our node index, and the current
         -- slot number. Our node index depends which genesis key has delegated
         -- to us, see 'genesisKeyCoreNodeId'.
-        PBftIsALeader credentials
-          | n `mod` pbftNumNodes == fromIntegral i -> return (Just credentials)
-          | otherwise                              -> return Nothing
+        IsALeader credentials
+            | n `mod` unNumCoreNodes pbftNumCoreNodes == unCoreNodeId pbftCoreNodeId
+            -> return (Just credentials)
+            | otherwise
+            -> return Nothing
           where
-            PBftIsLeader{pbftCoreNodeId = CoreNodeId i} = credentials
-            PBftParams{pbftNumNodes}                    = pbftParams
+            PBftIsLeader { pbftCoreNodeId } = credentials
+            PBftParams { pbftNumCoreNodes } = pbftParams
 
   applyChainState cfg@PBftNodeConfig{..} lv@(PBftLedgerView dms) (b :: hdr) chainState = do
       -- Check that the issuer signature verifies, and that it's a delegate of a
@@ -249,8 +250,9 @@ genesisKeyCoreNodeId :: CC.Genesis.Config
                         -- ^ The genesis verification key
                      -> Maybe CoreNodeId
 genesisKeyCoreNodeId gc vkey =
-  Data.Reflection.give (CC.Genesis.configProtocolMagicId gc) $
-  CoreNodeId <$> Set.lookupIndex (hashVerKey vkey) genesisKeyHashes
+    Data.Reflection.give (CC.Genesis.configProtocolMagicId gc) $
+    CoreNodeId . fromIntegral <$>
+    Set.lookupIndex (hashVerKey vkey) genesisKeyHashes
   where
     genesisKeyHashes :: Set.Set CC.Common.KeyHash
     genesisKeyHashes = CC.Genesis.unGenesisKeyHashes

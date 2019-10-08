@@ -26,7 +26,7 @@ import           Ouroboros.Consensus.Block
 import           Ouroboros.Consensus.Ledger.Abstract
 import           Ouroboros.Consensus.Ledger.Mock.Block
 import           Ouroboros.Consensus.Ledger.Mock.Forge
-import           Ouroboros.Consensus.NodeId (CoreNodeId)
+import           Ouroboros.Consensus.NodeId (CoreNodeId, NodeId (..))
 import           Ouroboros.Consensus.Protocol.LeaderSchedule
 import           Ouroboros.Consensus.Protocol.Praos
 import           Ouroboros.Consensus.Util.Condense
@@ -71,7 +71,9 @@ _simplePraosRuleHeader = simpleHeader
 instance SimpleCrypto c
       => ForgeExt (WithLeaderSchedule p) c SimplePraosRuleExt where
   forgeExt cfg () SimpleBlock{..} = do
-      let ext = SimplePraosRuleExt $ lsNodeConfigNodeId cfg
+      let ext = SimplePraosRuleExt $ case lsNodeConfigNodeId cfg of
+            RelayId _rid -> error "impossible, checkIsLeader guaranteed a CoreId"
+            CoreId   cid -> cid
       return SimpleBlock {
           simpleHeader = mkSimpleHeader encode simpleHeaderStd ext
         , simpleBody   = simpleBody

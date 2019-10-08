@@ -14,21 +14,25 @@ import           Ouroboros.Consensus.Protocol.Abstract
 import           Ouroboros.Consensus.Protocol.BFT
 
 protocolInfoBft :: NumCoreNodes
-                -> CoreNodeId
+                -> NodeId
                 -> SecurityParam
                 -> ProtocolInfo (SimpleBftBlock SimpleMockCrypto BftMockCrypto)
-protocolInfoBft (NumCoreNodes numCoreNodes) (CoreNodeId nid) securityParam =
+protocolInfoBft numCoreNodes nid securityParam =
     ProtocolInfo {
         pInfoConfig = BftNodeConfig {
             bftParams   = BftParams {
-                              bftNumNodes      = fromIntegral numCoreNodes
+                              bftNumCoreNodes  = numCoreNodes
                             , bftSecurityParam = securityParam
                             }
-          , bftNodeId   = CoreId nid
-          , bftSignKey  = SignKeyMockDSIGN nid
-          , bftVerKeys  = Map.fromList [
-                (CoreId n, VerKeyMockDSIGN n)
-              | n <- [0 .. numCoreNodes - 1]
+          , bftIsLeader = case nid of
+              RelayId rid -> IsNotALeader rid
+              CoreId  cid -> IsALeader BftIsLeader {
+                  bftCoreNodeId = cid
+                , bftSignKey    = SignKeyMockDSIGN (fromIntegral (unCoreNodeId cid))
+                }
+          , bftVerKeys  = Map.fromList
+              [ (cid', VerKeyMockDSIGN (fromIntegral (unCoreNodeId cid')))
+              | cid' <- enumCoreNodes numCoreNodes
               ]
           }
       , pInfoInitLedger = ExtLedgerState (genesisSimpleLedgerState addrDist) ()

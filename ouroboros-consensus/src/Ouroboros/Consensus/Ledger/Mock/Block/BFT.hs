@@ -83,9 +83,9 @@ instance ( SimpleCrypto c
          , Signable (BftDSIGN c') (SignedSimpleBft c c')
          )
       => ForgeExt (Bft c') c (SimpleBftExt c c') where
-  forgeExt cfg () SimpleBlock{..} = do
+  forgeExt cfg isLeader SimpleBlock{..} = do
       ext :: SimpleBftExt c c' <- fmap SimpleBftExt $
-        forgeBftFields cfg $
+        forgeBftFields cfg isLeader $
           SignedSimpleBft {
               signedSimpleBft = simpleHeaderStd
             }

@@ -20,21 +20,26 @@ import           Ouroboros.Consensus.Ledger.Extended
 import           Ouroboros.Consensus.Ledger.Mock
 import           Ouroboros.Consensus.Node.ProtocolInfo.Abstract
 import           Ouroboros.Consensus.NodeId (CoreNodeId (..), NodeId (..))
+import           Ouroboros.Consensus.Protocol.Abstract (IsALeaderOrNot (..))
 import           Ouroboros.Consensus.Protocol.ExtNodeConfig
 import           Ouroboros.Consensus.Protocol.Praos
 
 protocolInfoPraos :: NumCoreNodes
-                  -> CoreNodeId
+                  -> NodeId
                   -> PraosParams
                   -> ProtocolInfo (SimplePraosBlock SimpleMockCrypto
                                                     PraosMockCrypto)
-protocolInfoPraos (NumCoreNodes numCoreNodes) (CoreNodeId nid) params =
+protocolInfoPraos numCoreNodes nid params =
     ProtocolInfo {
         pInfoConfig = EncNodeConfig {
             encNodeConfigP = PraosNodeConfig {
                 praosParams        = params
-              , praosNodeId        = CoreId nid
-              , praosSignKeyVRF    = SignKeyMockVRF nid
+              , praosIsLeader      = case nid of
+                  RelayId rid -> IsNotALeader rid
+                  CoreId  cid -> IsALeader PraosIsLeader {
+                    praosCoreNodeId = cid
+                  , praosSignKeyVRF = SignKeyMockVRF $ fromIntegral $ unCoreNodeId cid
+                  }
               , praosInitialEta    = 0
               , praosInitialStake  = genesisStakeDist addrDist
               , praosVerKeys       = verKeys
@@ -45,19 +50,25 @@ protocolInfoPraos (NumCoreNodes numCoreNodes) (CoreNodeId nid) params =
             ledgerState         = genesisSimpleLedgerState addrDist
           , ouroborosChainState = []
           }
-      , pInfoInitState = PraosNodeState $ SignKeyMockKES
-           (fst $ verKeys IntMap.! nid)   -- key ID
-           0                              -- KES initial slot
-           (praosLifetimeKES params)      -- KES lifetime
+      , pInfoInitState = case nid of
+          RelayId _rid -> error "non-core node used PraosNodeState"
+          CoreId   cid -> PraosNodeState $ SignKeyMockKES
+             (fst $ verKeys IntMap.! cidInt) -- key ID
+             0                               -- KES initial slot
+             (praosLifetimeKES params)       -- KES lifetime
+           where
+             cidInt = fromIntegral $ unCoreNodeId cid
       }
   where
     addrDist :: AddrDist
     addrDist = mkAddrDist numCoreNodes
 
     verKeys :: IntMap (VerKeyKES MockKES, VerKeyVRF MockVRF)
-    verKeys = IntMap.fromList [ (nd, (VerKeyMockKES nd, VerKeyMockVRF nd))
-                              | nd <- [0 .. numCoreNodes - 1]
-                              ]
+    verKeys = IntMap.fromList
+      [ (cidInt, (VerKeyMockKES cidInt, VerKeyMockVRF cidInt))
+      | cid <- enumCoreNodes numCoreNodes
+      , let cidInt = fromIntegral $ unCoreNodeId cid
+      ]
 
 instance Serialise (BlockInfo PraosMockCrypto) where
   encode BlockInfo {..} = mconcat

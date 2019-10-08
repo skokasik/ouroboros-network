@@ -13,7 +13,7 @@ import           Ouroboros.Consensus.Node.ProtocolInfo.Mock.BFT as X
 import           Ouroboros.Consensus.Node.ProtocolInfo.Mock.PBFT as X
 import           Ouroboros.Consensus.Node.ProtocolInfo.Mock.Praos as X
 import           Ouroboros.Consensus.Node.ProtocolInfo.Mock.PraosRule as X
-import           Ouroboros.Consensus.NodeId (CoreNodeId (..))
+import           Ouroboros.Consensus.NodeId (NodeId (..))
 import           Ouroboros.Consensus.Protocol
 
 {-------------------------------------------------------------------------------
@@ -22,7 +22,7 @@ import           Ouroboros.Consensus.Protocol
 
 -- | Data required to run the selected protocol
 protocolInfo :: NumCoreNodes
-             -> CoreNodeId
+             -> NodeId
              -> Protocol blk
              -> ProtocolInfo blk
 protocolInfo nodes nid demoProtocol = case demoProtocol of

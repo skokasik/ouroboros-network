@@ -37,7 +37,7 @@ import           Ouroboros.Consensus.Crypto.DSIGN.Cardano
 import           Ouroboros.Consensus.Ledger.Byron hiding (genesisConfig)
 import           Ouroboros.Consensus.Ledger.Extended
 import           Ouroboros.Consensus.Node.ProtocolInfo.Abstract
-import           Ouroboros.Consensus.NodeId (CoreNodeId)
+import           Ouroboros.Consensus.NodeId (CoreNodeId, RelayNodeId)
 import           Ouroboros.Consensus.Protocol.Abstract
 import           Ouroboros.Consensus.Protocol.ExtNodeConfig
 import           Ouroboros.Consensus.Protocol.PBFT
@@ -113,7 +113,7 @@ protocolInfoByron :: Genesis.Config
                   -> Maybe PBftSignatureThreshold
                   -> Update.ProtocolVersion
                   -> Update.SoftwareVersion
-                  -> Maybe PBftLeaderCredentials
+                  -> IsALeaderOrNot RelayNodeId PBftLeaderCredentials
                   -> ProtocolInfo (ByronBlockOrEBB ByronConfig)
 protocolInfoByron genesisConfig@Genesis.Config {
                     Genesis.configGenesisHash = genesisHash
@@ -123,27 +123,26 @@ protocolInfoByron genesisConfig@Genesis.Config {
                       , Genesis.gdGenesisKeyHashes = genesisKeyHashes
                       }
                   }
-                  mSigThresh pVer sVer mLeader =
+                  mSigThresh pVer sVer leaderOrNot =
     ProtocolInfo {
         pInfoConfig = WithEBBNodeConfig $ EncNodeConfig {
             encNodeConfigP   = PBftNodeConfig {
                 pbftParams          =  PBftParams
                   { pbftSecurityParam      = SecurityParam (fromIntegral kParam)
-                  , pbftNumNodes           = fromIntegral . Set.size
+                  , pbftNumCoreNodes       = NumCoreNodes . fromIntegral
+                                           . Set.size
                                            . Genesis.unGenesisKeyHashes
                                            $ genesisKeyHashes
                   , pbftSignatureThreshold = unSignatureThreshold $
                       fromMaybe defaultPBftSignatureThreshold mSigThresh
                   }
-              , pbftIsLeader =
-                  case mLeader of
-                    Nothing                                  -> PBftIsNotALeader
-                    Just (PBftLeaderCredentials sk cert nid) ->
-                      PBftIsALeader PBftIsLeader {
-                        pbftCoreNodeId = nid
-                      , pbftSignKey    = SignKeyCardanoDSIGN sk
-                      , pbftDlgCert    = cert
-                      }
+              , pbftIsLeader = case leaderOrNot of
+                  IsNotALeader rid                              -> IsNotALeader rid
+                  IsALeader (PBftLeaderCredentials sk cert cid) -> IsALeader PBftIsLeader {
+                      pbftCoreNodeId = cid
+                    , pbftSignKey    = SignKeyCardanoDSIGN sk
+                    , pbftDlgCert    = cert
+                    }
             }
           , encNodeConfigExt = ByronConfig {
                 pbftProtocolMagic   = Genesis.configProtocolMagic genesisConfig

@@ -13,30 +13,36 @@ import           Ouroboros.Consensus.Ledger.Extended
 import           Ouroboros.Consensus.Ledger.Mock
 import           Ouroboros.Consensus.Node.ProtocolInfo.Abstract
 import           Ouroboros.Consensus.NodeId (CoreNodeId (..), NodeId (..))
+import           Ouroboros.Consensus.Protocol.Abstract (IsALeaderOrNot (..))
 import           Ouroboros.Consensus.Protocol.LeaderSchedule
 import           Ouroboros.Consensus.Protocol.Praos
 
 protocolInfoPraosRule :: NumCoreNodes
-                      -> CoreNodeId
+                      -> NodeId
                       -> PraosParams
                       -> LeaderSchedule
                       -> ProtocolInfo (SimplePraosRuleBlock SimpleMockCrypto)
-protocolInfoPraosRule (NumCoreNodes numCoreNodes)
-                      (CoreNodeId nid)
+protocolInfoPraosRule numCoreNodes
+                      nid
                       params
                       schedule =
     ProtocolInfo {
       pInfoConfig    = WLSNodeConfig
         { lsNodeConfigSchedule = schedule
-        , lsNodeConfigP        = PraosNodeConfig
+        , lsNodeConfigP        =
+            PraosNodeConfig
             { praosParams       = params
-            , praosNodeId       = CoreId nid
-            , praosSignKeyVRF   = NeverUsedSignKeyVRF
+            , praosIsLeader     = case nid of
+                RelayId rid -> IsNotALeader rid
+                CoreId  cid -> IsALeader PraosIsLeader {
+                  praosCoreNodeId = cid
+                , praosSignKeyVRF = NeverUsedSignKeyVRF
+                }
             , praosInitialEta   = 0
             , praosInitialStake = genesisStakeDist addrDist
             , praosVerKeys      = verKeys
             }
-        , lsNodeConfigNodeId   = CoreNodeId nid
+        , lsNodeConfigNodeId   = nid
         }
     , pInfoInitLedger = ExtLedgerState
         { ledgerState         = genesisSimpleLedgerState addrDist
@@ -48,6 +54,8 @@ protocolInfoPraosRule (NumCoreNodes numCoreNodes)
     addrDist = mkAddrDist numCoreNodes
 
     verKeys :: IntMap (VerKeyKES NeverKES, VerKeyVRF NeverVRF)
-    verKeys = IntMap.fromList [ (nd, (NeverUsedVerKeyKES, NeverUsedVerKeyVRF))
-                              | nd <- [0 .. numCoreNodes - 1]
-                              ]
+    verKeys = IntMap.fromList
+      [ (cidInt', (NeverUsedVerKeyKES, NeverUsedVerKeyVRF))
+      | cid' <- enumCoreNodes numCoreNodes
+      , let cidInt' = fromIntegral $ unCoreNodeId cid'
+      ]

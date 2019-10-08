@@ -20,8 +20,8 @@ import           Data.Reflection (give)
 
 import qualified Cardano.Chain.Block as Block
 import qualified Cardano.Chain.Genesis as Genesis
-import qualified Cardano.Crypto as Crypto
 import qualified Cardano.Chain.Update as Update
+import qualified Cardano.Crypto as Crypto
 
 import           Ouroboros.Consensus.Ledger.Byron
 import           Ouroboros.Consensus.Ledger.Byron.Config
@@ -30,6 +30,7 @@ import           Ouroboros.Consensus.Node.ProtocolInfo.Byron
 import           Ouroboros.Consensus.Node.ProtocolInfo.Mock.PBFT ()
 import           Ouroboros.Consensus.Node.ProtocolInfo.Mock.Praos ()
 import           Ouroboros.Consensus.Node.Run
+import           Ouroboros.Consensus.NodeId (RelayNodeId)
 import           Ouroboros.Consensus.Protocol.Abstract as X
 import           Ouroboros.Consensus.Protocol.BFT as X
 import           Ouroboros.Consensus.Protocol.ExtNodeConfig as X
@@ -37,7 +38,6 @@ import           Ouroboros.Consensus.Protocol.LeaderSchedule as X
 import           Ouroboros.Consensus.Protocol.PBFT as X
 import           Ouroboros.Consensus.Protocol.Praos as X
 import           Ouroboros.Consensus.Util
-
 
 {-------------------------------------------------------------------------------
   Supported protocols
@@ -82,7 +82,7 @@ data Protocol blk where
     -> Maybe PBftSignatureThreshold
     -> Update.ProtocolVersion
     -> Update.SoftwareVersion
-    -> Maybe PBftLeaderCredentials
+    -> IsALeaderOrNot RelayNodeId PBftLeaderCredentials
     -> Protocol (ByronBlockOrEBB ByronConfig)
 
 {-------------------------------------------------------------------------------

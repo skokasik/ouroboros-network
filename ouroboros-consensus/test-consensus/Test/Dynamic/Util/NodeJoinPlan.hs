@@ -29,12 +29,12 @@ import           Ouroboros.Consensus.Util.Orphans ()
 
 -- | In which slot each node joins the network
 --
-newtype NodeJoinPlan = NodeJoinPlan (Map CoreNodeId SlotNo)
+newtype NodeJoinPlan = NodeJoinPlan (Map NodeId SlotNo)
   deriving (Show)
 
 instance Condense NodeJoinPlan where
   condense (NodeJoinPlan m) = condense
-      [ (fromCoreNodeId nid, slot) | (nid, slot) <- Map.toAscList m ]
+      [ (nid, slot) | (nid, slot) <- Map.toAscList m ]
 
 -- | All nodes join immediately
 --
@@ -42,7 +42,7 @@ trivialNodeJoinPlan :: NumCoreNodes -> NodeJoinPlan
 trivialNodeJoinPlan numCoreNodes =
     NodeJoinPlan $
     Map.fromList $
-    [ (nid, SlotNo 0) | nid <- enumCoreNodes numCoreNodes ]
+    [ (CoreId cid, SlotNo 0) | cid <- enumCoreNodes numCoreNodes ]
 
 -- | Generate a 'NodeJoinPlan' consistent with the given properties
 --
@@ -65,7 +65,7 @@ genNodeJoinPlan numCoreNodes@(NumCoreNodes n) numSlots@(NumSlots t)
             let lastSlot = t - 1
             (SlotNo . toEnum) <$> choose (0, lastSlot)
 
-    let nids = enumCoreNodes numCoreNodes :: [CoreNodeId]
+    let nids = map CoreId $ enumCoreNodes numCoreNodes
     schedules <- vectorOf n genJoinSlot
     -- without loss of generality, the nodes start initializing in order of
     -- their Ids; this merely makes it easer to interpret the counterexamples
@@ -108,16 +108,15 @@ shrinkNodeJoinPlan (NodeJoinPlan m) =
 coreNodeIdJoinSlot ::
      HasCallStack
   => NodeJoinPlan -> CoreNodeId -> SlotNo
-coreNodeIdJoinSlot (NodeJoinPlan m) nid =
-    Map.findWithDefault
-        (error $ "not found: " <> condense (nid, Map.toList m))
-        nid m
+coreNodeIdJoinSlot nodeJoinPlan cid =
+    nodeIdJoinSlot nodeJoinPlan (CoreId cid)
 
 -- | Partial; @error@ for a node not in the plan
 --
 nodeIdJoinSlot ::
      HasCallStack
   => NodeJoinPlan -> NodeId -> SlotNo
-nodeIdJoinSlot nodeJoinPlan@(NodeJoinPlan m) ni = case ni of
-    CoreId cni -> coreNodeIdJoinSlot nodeJoinPlan (CoreNodeId cni)
-    _          -> error $ "not found: " <> condense (ni, Map.toList m)
+nodeIdJoinSlot (NodeJoinPlan m) nid =
+    Map.findWithDefault
+        (error $ "not found: " <> condense (nid, Map.toList m))
+        nid m

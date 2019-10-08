@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts        #-}
 {-# LANGUAGE FlexibleInstances       #-}
 {-# LANGUAGE MultiParamTypeClasses   #-}
+{-# LANGUAGE NamedFieldPuns          #-}
 {-# LANGUAGE RecordWildCards         #-}
 {-# LANGUAGE ScopedTypeVariables     #-}
 {-# LANGUAGE StandaloneDeriving      #-}
@@ -15,6 +16,8 @@ module Ouroboros.Consensus.Protocol.BFT (
     Bft
   , BftFields(..)
   , BftParams(..)
+  , BftIsALeaderOrNot
+  , BftIsLeader(..)
   , forgeBftFields
     -- * Classes
   , BftCrypto(..)
@@ -35,12 +38,13 @@ import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Proxy
 import           Data.Typeable
-import           Data.Word (Word64)
 import           GHC.Generics (Generic)
 
 import           Ouroboros.Network.Block
 
-import           Ouroboros.Consensus.NodeId (NodeId (..))
+import           Ouroboros.Consensus.Node.ProtocolInfo.Abstract
+                     (NumCoreNodes (..))
+import           Ouroboros.Consensus.NodeId (CoreNodeId (..), RelayNodeId)
 import           Ouroboros.Consensus.Protocol.Abstract
 import           Ouroboros.Consensus.Protocol.Signed
 import           Ouroboros.Consensus.Util.Condense
@@ -72,10 +76,11 @@ forgeBftFields :: ( MonadRandom m
                   , Signable (BftDSIGN c) toSign
                   )
                => NodeConfig (Bft c)
+               -> BftIsLeader c
                -> toSign
                -> m (BftFields c toSign)
-forgeBftFields BftNodeConfig{..} toSign = do
-      signature <- signedDSIGN toSign bftSignKey
+forgeBftFields _ BftIsLeader { bftSignKey } toSign = do
+      signature <- signedDSIGN toSign bftSignKey -- CONTINUE
       return $ BftFields {
           bftSignature = signature
         }
@@ -103,17 +108,31 @@ data BftParams = BftParams {
       bftSecurityParam :: !SecurityParam
 
       -- | Number of core nodes
-    , bftNumNodes      :: !Word64
+    , bftNumCoreNodes  :: !NumCoreNodes
     }
   deriving (Generic, NoUnexpectedThunks)
+
+
+-- | If we are a core node (i.e. a block producing node) we know which core
+-- node we are, and we have the operational key pair.
+--
+data BftIsLeader c = BftIsLeader {
+      bftCoreNodeId :: !CoreNodeId
+    , bftSignKey    :: !(SignKeyDSIGN (BftDSIGN c))
+    }
+  deriving (Generic)
+
+instance BftCrypto c => NoUnexpectedThunks (BftIsLeader c)
+  -- use generic instance
+
+type BftIsALeaderOrNot c = IsALeaderOrNot RelayNodeId (BftIsLeader c)
 
 instance BftCrypto c => OuroborosTag (Bft c) where
   -- | (Static) node configuration
   data NodeConfig (Bft c) = BftNodeConfig {
         bftParams   :: !BftParams
-      , bftNodeId   :: !NodeId
-      , bftSignKey  :: !(SignKeyDSIGN (BftDSIGN c))
-      , bftVerKeys  :: !(Map NodeId (VerKeyDSIGN (BftDSIGN c)))
+      , bftIsLeader :: !(BftIsALeaderOrNot c)
+      , bftVerKeys  :: !(Map CoreNodeId (VerKeyDSIGN (BftDSIGN c)))
       }
     deriving (Generic)
 
@@ -121,17 +140,20 @@ instance BftCrypto c => OuroborosTag (Bft c) where
   type SupportedHeader (Bft c) = HeaderSupportsBft c
   type NodeState       (Bft c) = ()
   type LedgerView      (Bft c) = ()
-  type IsLeader        (Bft c) = ()
+  type IsLeader        (Bft c) = BftIsLeader c
   type ChainState      (Bft c) = ()
 
   protocolSecurityParam = bftSecurityParam . bftParams
 
   checkIsLeader BftNodeConfig{..} (SlotNo n) _l _cs = do
-      return $ case bftNodeId of
-                 RelayId _ -> Nothing -- relays are never leaders
-                 CoreId  i -> if n `mod` bftNumNodes == fromIntegral i
-                                then Just ()
-                                else Nothing
+      return $ case bftIsLeader of
+        IsALeader credentials@BftIsLeader { bftCoreNodeId = CoreNodeId i }
+          | n `mod` unNumCoreNodes bftNumCoreNodes == i
+          -> Just credentials
+          | otherwise
+          -> Nothing
+        IsNotALeader _
+          -> Nothing
     where
       BftParams{..}  = bftParams
 
@@ -147,7 +169,7 @@ instance BftCrypto c => OuroborosTag (Bft c) where
       BftParams{..}  = bftParams
       BftFields{..}  = headerBftFields cfg b
       SlotNo n       = blockSlot b
-      expectedLeader = CoreId $ fromIntegral (n `mod` bftNumNodes)
+      expectedLeader = CoreNodeId (n `mod` unNumCoreNodes bftNumCoreNodes)
 
   rewindChainState _ _ _ = Just ()
 

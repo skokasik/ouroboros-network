@@ -15,6 +15,8 @@ import           Data.Reflection (give)
 import qualified Cardano.Chain.Genesis as Cardano.Genesis
 
 import           Ouroboros.Consensus.Demo.Run
+import           Ouroboros.Consensus.Node.ProtocolInfo.Abstract
+                     (NumCoreNodes (..))
 import           Ouroboros.Consensus.Protocol
 import           Ouroboros.Consensus.Util
 
@@ -38,11 +40,11 @@ defaultDemoPraosParams = PraosParams {
 defaultDemoPBftParams :: PBftParams
 defaultDemoPBftParams = PBftParams {
       pbftSecurityParam      = defaultSecurityParam
-    , pbftNumNodes           = nn
-    , pbftSignatureThreshold = (1.0 / fromIntegral nn) + 0.1
+    , pbftNumCoreNodes       = nn
+    , pbftSignatureThreshold = (1.0 / fromIntegral (unNumCoreNodes nn)) + 0.1
     }
   where
-    nn = 3
+    nn = NumCoreNodes 3
 
 {-------------------------------------------------------------------------------
   Evidence that we can run all the supported protocols
