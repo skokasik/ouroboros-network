@@ -3,6 +3,8 @@
 module System.Win32.Event
   ( LPSECURITY_ATTRIBUTES
   , createEvent
+  , setEvent
+  , resetEvent
   ) where
 
 import Foreign.C.String (withCAString)
@@ -50,3 +52,15 @@ foreign import ccall unsafe "windows.h CreateEventA"
                 -> BOOL                  -- ^ bInitialState
                 -> LPCSTR                -- ^ lpName
                 -> IO HANDLE
+
+setEvent :: HANDLE -> IO ()
+setEvent = failIfFalse_ "SetEvent" . c_SetEvent
+
+foreign import ccall unsafe "windows.h SetEvent"
+  c_SetEvent :: HANDLE -> IO BOOL
+
+resetEvent :: HANDLE -> IO ()
+resetEvent = failIfFalse_ "ResetEvent" . c_ResetEvent
+
+foreign import ccall unsafe "windows.h ResetEvent"
+  c_ResetEvent :: HANDLE -> IO BOOL
