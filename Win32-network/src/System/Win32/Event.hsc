@@ -1,12 +1,19 @@
 {-# LANGUAGE CApiFFI          #-}
+{-# LANGUAGE InterruptibleFFI #-}
+{-# LANGUAGE MultiWayIf       #-}
 
 module System.Win32.Event
   ( LPSECURITY_ATTRIBUTES
   , createEvent
   , setEvent
   , resetEvent
+  , WaitForSingleObjectStatus (..)
+  , waitForSingleObject
+  , interruptibleWaitForSingleObject
   ) where
 
+import Control.Concurrent
+import Control.Exception
 import Foreign.C.String (withCAString)
 
 import System.Win32.File (LPSECURITY_ATTRIBUTES)
@@ -64,3 +71,56 @@ resetEvent = failIfFalse_ "ResetEvent" . c_ResetEvent
 
 foreign import ccall unsafe "windows.h ResetEvent"
   c_ResetEvent :: HANDLE -> IO BOOL
+
+type WAIT_FOR_SINGLE_OBJECT_STATUS = UINT
+
+#{enum WAIT_FOR_SINGLE_OBJECT_STATUS,
+ , wAIT_ABANDONED = WAIT_ABANDONED
+ , wAIT_OBJECT_0  = WAIT_OBJECT_0
+ , wAIT_TIMEOUT   = WAIT_TIMEOUT
+ , wAIT_FAILED    = WAIT_FAILED
+ }
+
+foreign import ccall interruptible "windows.h WaitForSingleObject"
+  c_WaitForSingleObject :: HANDLE
+                        -> DWORD -- ^ dwMilliseconds
+                        -> IO WAIT_FOR_SINGLE_OBJECT_STATUS
+
+data WaitForSingleObjectStatus
+    = WaitAbandoned
+    | WaitObject0
+    | WaitTimeout
+
+-- | 'waitForSingleObject' is not interruptible, use
+-- 'interruptibleWaitForSingleObject' if this is desired.
+--
+waitForSingleObject :: HANDLE -> DWORD -> IO WaitForSingleObjectStatus
+waitForSingleObject h dwMilliseconds = do
+    res <- failIf ((==) wAIT_FAILED)
+                  "WaitForSingleObject"
+                  (c_WaitForSingleObject h dwMilliseconds)
+    if | res == wAIT_ABANDONED -> pure WaitAbandoned
+       | res == wAIT_OBJECT_0  -> pure WaitObject0
+       | res == wAIT_TIMEOUT   -> pure WaitTimeout
+       | otherwise             -> error $ "WaitForSingleObject: not recognised return code"
+                                        ++ show res
+
+interruptibleWaitForSingleObject
+    :: HANDLE -> DWORD -> IO WaitForSingleObjectStatus
+interruptibleWaitForSingleObject h dwMilliseconds =
+    do
+      v <- newEmptyMVar
+      -- child thred which blocks on the event, if the parent thread receives
+      -- an exception, unblock the thread.
+      _ <- forkFinally
+            (waitForSingleObject h dwMilliseconds)
+            (putMVar v)
+      res <- takeMVar v
+      case res of
+        Left e  -> throwIO e
+        Right r -> pure r
+  `finally` do
+    -- `setEvent` is idempotent, in case of an (async) exception this will
+    -- cancel the forked thread
+    setEvent h
+        

@@ -52,6 +52,7 @@ test-suite test-Win32-network
   ghc-options:         -Wall
                        -threaded
   other-modules:       Test.NamedPipes
+                       Test.Event
   build-depends:       base,
                        binary,
                        bytestring,
