@@ -18,6 +18,7 @@ module System.Win32.NamedPipes (
 
     -- ** Paramater types
     LPSECURITY_ATTRIBUTES,
+    LPOVERLAPPED,
     OVERLAPPED (..),
     OpenMode,
     pIPE_ACCESS_DUPLEX,
@@ -58,44 +59,17 @@ import GHC.IO.Handle.FD (mkHandleFromFD)
 import Foreign hiding (void)
 import Foreign.C
 import System.Win32.Types
-import System.Win32.File hiding ( LPOVERLAPPED
-                                , win32_ReadFile, c_ReadFile
+#if MIN_VERSION_Win32 (2, 7, 0)
+import System.Win32.File hiding ( win32_ReadFile, c_ReadFile
                                 , win32_WriteFile, c_WriteFile
                                 , c_FlushFileBuffers
                                 )
-
-
-
-#if MIN_VERSION_Win32 (2, 7, 0)
--- OVERLAPPED data type is imported from 'System.Win32.File'
 #else
-data OVERLAPPED
-  = OVERLAPPED { ovl_internal     :: ULONG_PTR
-               , ovl_internalHigh :: ULONG_PTR
-               , ovl_offset       :: DWORD
-               , ovl_offsetHigh   :: DWORD
-               , ovl_hEvent       :: HANDLE
-               } deriving (Show)
-
-instance Storable OVERLAPPED where
-  sizeOf = const ((32))
-  alignment _ = 8
-  poke buf ad = do
-      ((\hsc_ptr -> pokeByteOff hsc_ptr 0)) buf (ovl_internal     ad)
-      ((\hsc_ptr -> pokeByteOff hsc_ptr 8)) buf (ovl_internalHigh ad)
-      ((\hsc_ptr -> pokeByteOff hsc_ptr 16)) buf (ovl_offset       ad)
-      ((\hsc_ptr -> pokeByteOff hsc_ptr 20)) buf (ovl_offsetHigh   ad)
-      ((\hsc_ptr -> pokeByteOff hsc_ptr 24)) buf (ovl_hEvent       ad)
-
-  peek buf = do
-      intnl      <- ((\hsc_ptr -> peekByteOff hsc_ptr 0)) buf
-      intnl_high <- ((\hsc_ptr -> peekByteOff hsc_ptr 8)) buf
-      off        <- ((\hsc_ptr -> peekByteOff hsc_ptr 16)) buf
-      off_high   <- ((\hsc_ptr -> peekByteOff hsc_ptr 20)) buf
-      hevnt      <- ((\hsc_ptr -> peekByteOff hsc_ptr 24)) buf
-      return $ OVERLAPPED intnl intnl_high off off_high hevnt
-
-type LPOVERLAPPED = Ptr OVERLAPPED
+import System.Win32.Types.Overlapped
+import System.Win32.File hiding ( LPOVERLAPPED, win32_ReadFile, c_ReadFile
+                                , win32_WriteFile, c_WriteFile
+                                , c_FlushFileBuffers
+                                )
 #endif
 
 -- | The named pipe open mode.
