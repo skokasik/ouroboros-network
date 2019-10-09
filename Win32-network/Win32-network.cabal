@@ -23,6 +23,7 @@ library
   hs-source-dirs:      src
   exposed-modules:     System.Win32.NamedPipes
                        System.Win32.Event
+                       System.Win32.CompletionPort
                        System.Win32.Types.Overlapped
   -- other-modules:       
   -- other-extensions:    
