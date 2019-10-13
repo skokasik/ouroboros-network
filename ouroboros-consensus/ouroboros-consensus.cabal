@@ -269,6 +269,7 @@ test-suite test-consensus
                     Test.Dynamic.TxGen
                     Test.Dynamic.Util
                     Test.Dynamic.Util.Expectations
+                    Test.Dynamic.Util.LivePipes
                     Test.Dynamic.Util.NodeJoinPlan
                     Test.Dynamic.Util.NodeTopology
                     Test.Dynamic.Util.Tests
@@ -317,6 +318,7 @@ test-suite test-consensus
                     random,
                     reflection,
                     serialise,
+                    splitmix,
                     tasty,
                     tasty-hunit,
                     tasty-quickcheck,
