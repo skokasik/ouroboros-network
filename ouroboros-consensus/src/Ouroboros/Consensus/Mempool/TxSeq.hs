@@ -13,16 +13,17 @@ module Ouroboros.Consensus.Mempool.TxSeq (
   , fromTxSeq
   , lookupByTicketNo
   , splitAfterTicketNo
+  , splitAfterDiffTime
   , zeroTicketNo
   , filterTxs
   ) where
 
 import           Cardano.Prelude (NoUnexpectedThunks)
 
-import           Control.Monad.Class.MonadTime (DiffTime)
 import           Data.FingerTree.Strict (StrictFingerTree)
 import qualified Data.FingerTree.Strict as FingerTree
 import qualified Data.Foldable as Foldable
+import           Data.Time.Clock (DiffTime, secondsToDiffTime)
 import           Data.Word (Word64)
 import           GHC.Generics (Generic)
 
@@ -82,23 +83,33 @@ instance Foldable TxSeq where
 -- instance.
 --
 data TxSeqMeasure = TxSeqMeasure {
-       mMinTicket :: !TicketNo,
-       mMaxTicket :: !TicketNo,
-       mSize      :: !Int
+       mMinTicket   :: !TicketNo,
+       mMaxTicket   :: !TicketNo,
+       mMinDiffTime :: !DiffTime,
+       mMaxDiffTime :: !DiffTime,
+       mSize        :: !Int
      }
   deriving Show
 
 instance FingerTree.Measured TxSeqMeasure (TxTicket tx) where
-  measure (TxTicket _ tno _sno) = TxSeqMeasure tno tno 1
+  measure (TxTicket _ tno sno) = TxSeqMeasure tno tno sno sno 1
 
 instance Semigroup TxSeqMeasure where
   vl <> vr = TxSeqMeasure
-               (mMinTicket vl `min` mMinTicket vr)
-               (mMaxTicket vl `max` mMaxTicket vr)
-               (mSize      vl   +   mSize      vr)
+               (mMinTicket   vl `min` mMinTicket   vr)
+               (mMaxTicket   vl `max` mMaxTicket   vr)
+               (mMinDiffTime vl `min` mMinDiffTime vr)
+               (mMaxDiffTime vl `max` mMaxDiffTime vr)
+               (mSize        vl   +   mSize        vr)
 
 instance Monoid TxSeqMeasure where
-  mempty  = TxSeqMeasure maxBound minBound 0
+  mempty  = TxSeqMeasure maxBound minBound maxTime minTime 0
+    where
+      maxTime :: DiffTime
+      maxTime = secondsToDiffTime (fromIntegral (maxBound :: Word64))
+
+      minTime :: DiffTime
+      minTime = secondsToDiffTime (fromIntegral (minBound :: Word64))
   mappend = (<>)
 
 -- | A helper function for the ':>' pattern.
@@ -160,6 +171,17 @@ lookupByTicketNo (TxSeq txs) n =
 splitAfterTicketNo :: TxSeq tx -> TicketNo -> (TxSeq tx, TxSeq tx)
 splitAfterTicketNo (TxSeq txs) n =
     case FingerTree.split (\m -> mMaxTicket m > n) txs of
+      (l, r) -> (TxSeq l, TxSeq r)
+
+-- | \( O(\log(n) \). Split the sequence of transactions into two parts
+-- based on the given point in time in a monotonic clock. The first part has
+-- transactions with 'DiffTime's less than or equal to the given 'DiffTime',
+-- and the second part has transactions with 'DiffTime's strictly greater than
+-- the given 'DiffTime'.
+--
+splitAfterDiffTime :: TxSeq tx -> DiffTime -> (TxSeq tx, TxSeq tx)
+splitAfterDiffTime (TxSeq txs) n =
+    case FingerTree.split (\m -> mMaxDiffTime m > n) txs of
       (l, r) -> (TxSeq l, TxSeq r)
 
 -- | Convert a 'TxSeq' to a list of pairs of transactions and their
