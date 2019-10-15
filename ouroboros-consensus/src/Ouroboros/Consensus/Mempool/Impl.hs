@@ -20,6 +20,7 @@ import           Control.Exception (assert)
 import           Control.Monad.Except
 import qualified Data.Foldable as Foldable
 import qualified Data.Set as Set
+import           Data.Time.Clock (DiffTime, secondsToDiffTime)
 import           Data.Typeable
 import           GHC.Generics (Generic)
 
@@ -390,7 +391,7 @@ implRemoveTxs mpEnv@MempoolEnv{mpEnvTracer, mpEnvStateVar} txIds = do
       -- the mempool.
       modifyTVar mpEnvStateVar $ \is@IS{isTxs} -> is
         { isTxs = TxSeq.filterTxs
-            (\(TxTicket tx _) -> txId tx `notElem` toRemove)
+            (\(TxTicket tx _ _) -> txId tx `notElem` toRemove)
             isTxs
         }
       -- TODO some duplication with 'implWithSyncState'
@@ -561,9 +562,12 @@ extendVRPrevApplied cfg (tx, tn)
     case runExcept (reapplyTx cfg tx vrAfter) of
       Left err  -> vr { vrInvalid = (tx, err) : vrInvalid
                       }
-      Right st' -> vr { vrValid   = vrValid :> TxTicket tx tn
+      Right st' -> vr { vrValid   = vrValid :> TxTicket tx tn placeholder
                       , vrAfter   = st'
                       }
+  where
+    placeholder :: DiffTime
+    placeholder = secondsToDiffTime 0
 
 -- | Extend 'ValidationResult' with a new transaction (one which we have not
 -- previously validated) that may or may not be valid in this ledger state.
@@ -583,11 +587,14 @@ extendVRNew cfg tx
     in  case runExcept (applyTx cfg tx vrAfter) of
       Left err  -> vr { vrInvalid      = (tx, err) : vrInvalid
                       }
-      Right st' -> vr { vrValid        = vrValid :> TxTicket tx nextTicketNo
+      Right st' -> vr { vrValid        = vrValid :> TxTicket tx nextTicketNo placeholder
                       , vrNewValid     = tx : vrNewValid
                       , vrAfter        = st'
                       , vrLastTicketNo = nextTicketNo
                       }
+  where
+    placeholder :: DiffTime
+    placeholder = secondsToDiffTime 0
 
 -- | Validate internal state
 validateIS :: forall m blk. (IOLike m, ApplyTx blk)

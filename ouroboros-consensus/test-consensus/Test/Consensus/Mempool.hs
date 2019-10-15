@@ -802,8 +802,10 @@ prop_TxSeq_lookupByTicketNo_complete xs =
         | (tx, tn) <- TxSeq.fromTxSeq txseq ]
   where
     txseq :: TxSeq Int
-    txseq = foldl' (TxSeq.:>) TxSeq.Empty
-                   (zipWith TxTicket xs (map TicketNo [0..]))
+    txseq = foldl'
+      (TxSeq.:>)
+      TxSeq.Empty
+      (zipWith3 TxTicket xs (map TicketNo [0..]) (cycle [secondsToDiffTime 0]))
 
 -- | Only finds elements in the sequence
 prop_TxSeq_lookupByTicketNo_sound ::
@@ -831,7 +833,7 @@ prop_TxSeq_lookupByTicketNo_sound smalls small =
     txseq =
         foldl' (TxSeq.:>) TxSeq.Empty $ map mkTicket haystack
 
-    mkTicket x = TxTicket x (mkTicketNo x)
+    mkTicket x = TxTicket x (mkTicketNo x) (secondsToDiffTime 0)
     mkTicketNo = TicketNo . toEnum
 
 {-------------------------------------------------------------------------------
