@@ -40,12 +40,16 @@ module System.Win32.NamedPipes (
     flushPipe,
     disconnectPipe,
 
+    -- * LowLevel system calls
+    win32_ReadFile,
+    win32_WriteFile,
+
     -- * Client and server APIs
     pipeToHandle,
   ) where
 
 
-import Control.Monad (unless)
+import Control.Monad (when, unless)
 import Data.Functor (void)
 import           Data.ByteString (ByteString)
 import qualified Data.ByteString.Internal as BS
@@ -71,6 +75,7 @@ import System.Win32.File hiding ( LPOVERLAPPED, win32_ReadFile, c_ReadFile
                                 , c_FlushFileBuffers
                                 )
 #endif
+import System.Win32.Async (eRROR_IO_PENDING)
 
 -- | The named pipe open mode.
 --
@@ -235,9 +240,15 @@ closePipe = closeHandle
 
 win32_ReadFile :: HANDLE -> Ptr a -> DWORD -> Maybe OVERLAPPED -> IO DWORD
 win32_ReadFile h buf n mb_ovl =
-  alloca $ \ p_n -> do
-    maybeWith with mb_ovl (failIfFalse_ "ReadFile" . c_ReadFile h buf n p_n)
-    peek p_n
+    alloca $ \ p_n -> do
+      maybeWith with mb_ovl
+        $ \ovl_ptr -> do
+          res <- c_ReadFile h buf n p_n ovl_ptr
+          unless res $ do
+            errCode <- getLastError
+            when (errCode /= eRROR_IO_PENDING)
+              $ failWith "win32_ReadFile" errCode
+      peek p_n
 
 foreign import ccall interruptible "windows.h ReadFile"
   c_ReadFile :: HANDLE -> Ptr a -> DWORD -> Ptr DWORD -> LPOVERLAPPED -> IO Bool
@@ -246,12 +257,13 @@ foreign import ccall interruptible "windows.h ReadFile"
 --
 readPipe :: HANDLE
          -> Int
+         -> Maybe OVERLAPPED
          -> IO ByteString
-readPipe h size
+readPipe h size mb_ovl
   = BS.createAndTrim size
       (\ptr ->
         fromIntegral <$>
-          win32_ReadFile h ptr (fromIntegral size) Nothing)
+          win32_ReadFile h ptr (fromIntegral size) mb_ovl)
 
 -- | Get a single line from a 'HANDLE'.
 --
@@ -261,7 +273,7 @@ pGetLine h = go ""
     where
       go :: String -> IO String
       go !s = do
-        [x] <- BSC.unpack <$> readPipe h 1
+        [x] <- BSC.unpack <$> readPipe h 1 Nothing
         if x == '\n'
           then pure (reverse s)
           else go (x : s)

@@ -98,7 +98,7 @@ test_interruptible_readPipe =
             -- 'IO ()' is a monoid!
             (foldMap closePipe)
             $ \(_,     hpipe') -> do
-                tid <- forkIO (void $ readPipe hpipe' 1)
+                tid <- forkIO (void $ readPipe hpipe' 1 Nothing)
                 threadDelay 100
                 killThread tid
 
@@ -123,18 +123,18 @@ test_interruptible_readPipe_sync =
                                 Nothing)
              (foldMap closePipe)
              $ \(_,     hpipe') -> do
-                tid <- forkIO (void $ readPipe hpipe' 1)
+                tid <- forkIO (void $ readPipe hpipe' 1 Nothing)
                 threadDelay 100
                 killThread tid
-                tid' <- forkIO (void $ readPipe hpipe' 1)
+                tid' <- forkIO (void $ readPipe hpipe' 1 Nothing)
                 threadDelay 100
                 killThread tid'
 
 
 -- | Interrupt two simultanous reads.
 --
-test_interruptible_readPipe_conc :: IO ()
-test_interruptible_readPipe_conc =
+test_interruptible_read_async :: IO ()
+test_interruptible_read_async =
     bracket ((,) <$> createNamedPipe pipeName
                                      pIPE_ACCESS_DUPLEX
                                      (pIPE_TYPE_BYTE .|. pIPE_READMODE_BYTE)
@@ -152,8 +152,8 @@ test_interruptible_readPipe_conc =
                                 Nothing)
             (foldMap closePipe)
             $ \(_, hpipe') -> do
-              tid  <- forkIO (void $ readPipe hpipe' 1)
-              tid' <- forkIO (void $ readPipe hpipe' 1)
+              tid  <- forkIO (void $ readPipe hpipe' 1 Nothing)
+              tid' <- forkIO (void $ readPipe hpipe' 1 Nothing)
               threadDelay 100
               killThread tid
               killThread tid'
@@ -226,7 +226,7 @@ test_WriteRead bs =
                                 Nothing)
             (foldMap closePipe)
             $ \(r,w) -> do
-              bs' <- writePipe w bs >> readPipe r (BS.length bs)
+              bs' <- writePipe w bs Nothing >> readPipe r (BS.length bs) Nothing
               pure (bs == bs')
 
 prop_WriteRead :: NonEmptyBS -> Property
@@ -261,7 +261,7 @@ prop_interruptible_Write = ioProperty $ do
       $ \(_,w) -> do
 
         tid <- mask $ \unmask -> forkIO $ void $
-          unmask (writePipe w bs)
+          unmask (writePipe w bs Nothing)
             `catch` \(e :: AsyncException) -> putMVar v e >> throwIO e
 
         killThread tid
@@ -297,9 +297,9 @@ handleToBinaryChannel h = BinaryChannel { readChannel, writeChannel, closeChanne
             size   :: Int
             size   = bool (+1) id b $ foldl' (\x y -> x + BS.length y) 0 chunks
         -- send header
-        _ <- writePipe h (BSL.toStrict $ encode size) -- just a single chunk
+        _ <- writePipe h (BSL.toStrict $ encode size) Nothing -- just a single chunk
         -- send payload
-        traverse_ (writePipe h) chunks
+        traverse_ (\chunk -> writePipe h chunk Nothing) chunks
 
       readChannel b = do
         bs <- readLen [] 8
@@ -312,7 +312,7 @@ handleToBinaryChannel h = BinaryChannel { readChannel, writeChannel, closeChanne
 
       readLen !bufs 0 = pure $ BS.concat (reverse bufs)
       readLen !bufs s = do
-        bs <- readPipe h s
+        bs <- readPipe h s Nothing
         when (BS.null bs)
           $ throwIO ReceivedNullBytes
         readLen (bs : bufs) (s - fromIntegral (BS.length bs))
