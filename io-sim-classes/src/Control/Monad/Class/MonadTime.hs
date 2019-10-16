@@ -58,4 +58,3 @@ instance MonadTime IO where
 
 foreign import ccall unsafe "getMonotonicNSec"
     getMonotonicNSec :: IO Word64
-

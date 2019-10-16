@@ -14,7 +14,8 @@ module Ouroboros.Consensus.Mempool.TxSeq (
   , txTickets
   , lookupByTicketNo
   , splitAfterTicketNo
-  , splitAfterDiffTime
+  , splitAfterExpiryTime
+  , splitExpiredTxs
   , zeroTicketNo
   , filterTxs
   ) where
@@ -24,9 +25,11 @@ import           Cardano.Prelude (NoUnexpectedThunks)
 import           Data.FingerTree.Strict (StrictFingerTree)
 import qualified Data.FingerTree.Strict as FingerTree
 import qualified Data.Foldable as Foldable
-import           Data.Time.Clock (DiffTime, secondsToDiffTime)
+import           Data.Time.Clock (secondsToDiffTime)
 import           Data.Word (Word64)
 import           GHC.Generics (Generic)
+
+import           Ouroboros.Consensus.Mempool.Expiry (ExpiryTime (..))
 
 {-------------------------------------------------------------------------------
   Mempool transaction sequence as a finger tree
@@ -43,11 +46,11 @@ newtype TicketNo = TicketNo Word64
 zeroTicketNo :: TicketNo
 zeroTicketNo = TicketNo 0
 
--- | We pair up transactions in the mempool with their ticket number and the
--- monotonic 'Time' at which they were submitted.
+-- | We associate transactions in the mempool with their ticket number and the
+-- time at which they will expire.
 --
-data TxTicket tx = TxTicket !tx !TicketNo !DiffTime
-  deriving (Show, Generic, NoUnexpectedThunks)
+data TxTicket tx = TxTicket !tx !TicketNo !ExpiryTime
+  deriving (Eq, Show, Generic, NoUnexpectedThunks)
 
 -- | The mempool is a sequence of transactions with their ticket numbers.
 -- Transactions are allocated monotonically increasing ticket numbers as they
@@ -84,33 +87,36 @@ instance Foldable TxSeq where
 -- instance.
 --
 data TxSeqMeasure = TxSeqMeasure {
-       mMinTicket   :: !TicketNo,
-       mMaxTicket   :: !TicketNo,
-       mMinDiffTime :: !DiffTime,
-       mMaxDiffTime :: !DiffTime,
-       mSize        :: !Int
+       mMinTicket     :: !TicketNo,
+       mMaxTicket     :: !TicketNo,
+       mMinExpiryTime :: !ExpiryTime,
+       mMaxExpiryTime :: !ExpiryTime,
+       mSize          :: !Int
      }
   deriving Show
 
 instance FingerTree.Measured TxSeqMeasure (TxTicket tx) where
-  measure (TxTicket _ tno sno) = TxSeqMeasure tno tno sno sno 1
+  measure (TxTicket _ tno et) = TxSeqMeasure tno tno et et 1
 
 instance Semigroup TxSeqMeasure where
   vl <> vr = TxSeqMeasure
-               (mMinTicket   vl `min` mMinTicket   vr)
-               (mMaxTicket   vl `max` mMaxTicket   vr)
-               (mMinDiffTime vl `min` mMinDiffTime vr)
-               (mMaxDiffTime vl `max` mMaxDiffTime vr)
-               (mSize        vl   +   mSize        vr)
+               (mMinTicket     vl `min` mMinTicket     vr)
+               (mMaxTicket     vl `max` mMaxTicket     vr)
+               (mMinExpiryTime vl `min` mMinExpiryTime vr)
+               (mMaxExpiryTime vl `max` mMaxExpiryTime vr)
+               (mSize          vl   +   mSize          vr)
 
 instance Monoid TxSeqMeasure where
-  mempty  = TxSeqMeasure maxBound minBound maxTime minTime 0
+  mempty = TxSeqMeasure maxBound minBound maxExpiryTime minExpiryTime 0
     where
-      maxTime :: DiffTime
-      maxTime = secondsToDiffTime (fromIntegral (maxBound :: Word64))
+      maxExpiryTime :: ExpiryTime
+      maxExpiryTime = ExpiryTime $
+        secondsToDiffTime (fromIntegral (maxBound :: Word64))
 
-      minTime :: DiffTime
-      minTime = secondsToDiffTime (fromIntegral (minBound :: Word64))
+      minExpiryTime :: ExpiryTime
+      minExpiryTime = ExpiryTime $
+        secondsToDiffTime (fromIntegral (minBound :: Word64))
+
   mappend = (<>)
 
 -- | A helper function for the ':>' pattern.
@@ -174,22 +180,36 @@ splitAfterTicketNo (TxSeq txs) n =
     case FingerTree.split (\m -> mMaxTicket m > n) txs of
       (l, r) -> (TxSeq l, TxSeq r)
 
--- | \( O(\log(n) \). Split the sequence of transactions into two parts
--- based on the given point in time in a monotonic clock. The first part has
--- transactions with 'DiffTime's less than or equal to the given 'DiffTime',
--- and the second part has transactions with 'DiffTime's strictly greater than
--- the given 'DiffTime'.
+-- | \( O(\log(n) \). Split the sequence of transactions into two parts based
+-- on the given 'ExpiryTime'. The first part has transactions with
+-- 'ExpiryTime's less than or equal to the given 'ExpiryTime', and the second
+-- part has transactions with 'ExpiryTime's strictly greater than the given
+-- 'ExpiryTime'.
 --
-splitAfterDiffTime :: TxSeq tx -> DiffTime -> (TxSeq tx, TxSeq tx)
-splitAfterDiffTime (TxSeq txs) n =
-    case FingerTree.split (\m -> mMaxDiffTime m > n) txs of
+-- TODO @intricate: Refactor
+splitAfterExpiryTime :: TxSeq tx -> ExpiryTime -> (TxSeq tx, TxSeq tx)
+splitAfterExpiryTime (TxSeq txs) n =
+    case FingerTree.split (\m -> mMaxExpiryTime m > n) txs of
       (l, r) -> (TxSeq l, TxSeq r)
+
+-- | Split the expired transactions from the unexpired:
+--
+-- * 'fst' of the result are expired
+-- * 'snd' of the result are unexpired
+--
+-- TODO @intricate: Refactor
+splitExpiredTxs :: TxSeq tx
+                -> ExpiryTime
+                -> (TxSeq tx, TxSeq tx)
+splitExpiredTxs txSeq expTime = case expTime of
+  NoExpiryTime -> (Empty, txSeq)
+  ExpiryTime _ -> splitAfterExpiryTime txSeq expTime
 
 -- | Convert a 'TxSeq' to a list of pairs of transactions and their
 -- associated 'TicketNo's.
 fromTxSeq :: TxSeq tx -> [(tx, TicketNo)]
 fromTxSeq (TxSeq ftree) = fmap
-  (\(TxTicket tx tn _sno) -> (tx, tn))
+  (\(TxTicket tx tn _et) -> (tx, tn))
   (Foldable.toList ftree)
 
 -- | \( O(n) \). Filter the 'TxSeq'.

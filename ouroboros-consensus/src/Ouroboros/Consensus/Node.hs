@@ -58,6 +58,7 @@ import           Ouroboros.Consensus.BlockchainTime
 import           Ouroboros.Consensus.ChainSyncClient (ClockSkew (..))
 import           Ouroboros.Consensus.Ledger.Extended (ExtLedgerState)
 import           Ouroboros.Consensus.Mempool (GenTx, MempoolCapacity (..))
+import           Ouroboros.Consensus.Mempool.Expiry (ExpiryThreshold (..))
 import           Ouroboros.Consensus.Node.DbMarker
 import           Ouroboros.Consensus.Node.ErrorPolicy
 import           Ouroboros.Consensus.Node.ProtocolInfo
@@ -260,7 +261,8 @@ mkNodeArgs registry cfg initState tracers btime chainDB = NodeArgs
     , blockFetchSize      = nodeBlockFetchSize
     , blockMatchesHeader  = nodeBlockMatchesHeader
     , maxUnackTxs         = 100 -- TODO
-    , mempoolCap          = MempoolCapacity 1000
+    , mempoolCap          = MempoolCapacity 1000 -- TODO
+    , mempoolExpThreshold = ExpiryThreshold (secondsToDiffTime (60 * 60)) -- TODO
     , chainSyncPipelining = pipelineDecisionLowHighMark 200 300 -- TODO
     }
   where

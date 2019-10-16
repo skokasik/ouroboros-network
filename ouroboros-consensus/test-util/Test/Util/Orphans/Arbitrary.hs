@@ -19,6 +19,8 @@ import           Ouroboros.Network.Block (SlotNo (..))
 
 import           Ouroboros.Consensus.BlockchainTime
 import           Ouroboros.Consensus.ChainSyncClient (ClockSkew (..))
+import           Ouroboros.Consensus.Mempool.Expiry (ExpiryTime (..),
+                     ExpiryThreshold (..))
 import           Ouroboros.Consensus.Node.ProtocolInfo
 import           Ouroboros.Consensus.Util.Random (Seed (..))
 
@@ -38,6 +40,10 @@ instance Arbitrary NumCoreNodes where
 instance Arbitrary NumSlots where
   arbitrary = NumSlots <$> choose (minNumSlots, 100)
   shrink (NumSlots n) = NumSlots <$> (filter (>= minNumSlots) $ shrink n)
+
+instance Arbitrary DiffTime where
+  arbitrary = arbitrarySizedFractional
+  shrink    = shrinkRealFrac
 
 -- | Picks time span between 0 seconds and (roughly) 50 years
 instance Arbitrary NominalDiffTime where
@@ -96,6 +102,30 @@ instance Arbitrary EpochSlot where
 instance Arbitrary ClockSkew where
   arbitrary = ClockSkew <$> choose (0, 5)
   shrink (ClockSkew n) = [ ClockSkew n' | n' <- shrink n ]
+
+{-------------------------------------------------------------------------------
+  Mempool
+-------------------------------------------------------------------------------}
+
+instance Arbitrary ExpiryThreshold where
+  arbitrary = oneof
+    [ pure NoExpiryThreshold
+    , ExpiryThreshold . secondsToDiffTime . getPositive <$> arbitrary
+    ]
+  shrink NoExpiryThreshold    = []
+  shrink (ExpiryThreshold et) =
+    NoExpiryThreshold : [ExpiryThreshold et' | et' <- shrink et]
+
+instance Arbitrary ExpiryTime where
+  -- TODO @intricate: Make sure doesn't go over max time defined in TxSeq.
+  -- Maybe we should bound ExpiryTime and ExpiryThreshold like Word64s?
+  arbitrary = oneof
+    [ pure NoExpiryTime
+    , ExpiryTime . secondsToDiffTime . getPositive <$> arbitrary
+    ]
+  shrink NoExpiryTime = []
+  shrink (ExpiryTime et) =
+    NoExpiryTime : [ExpiryTime et' | et' <- shrink et]
 
 {-------------------------------------------------------------------------------
   Crypto
