@@ -5,7 +5,16 @@
 {-# LANGUAGE TupleSections       #-}
 {-# LANGUAGE TypeApplications    #-}
 
-module Test.NamedPipes (tests) where
+module Test.NamedPipes
+  ( tests
+  , test_PingPong
+  , test_PingPongPipelined
+  , Blocking (..)
+  , handleToBinaryChannel
+  -- generators
+  , NonEmptyBS (..)
+  , LargeNonEmptyBS (..)
+  ) where
 
 import           Control.Concurrent.MVar
 import           Control.Concurrent
@@ -36,22 +45,21 @@ pipeName = "\\\\.\\pipe\\test-Win32-network"
 
 tests :: TestTree
 tests =
-  testGroup "NamedPipes"
+  testGroup "Win32.NamedPipes"
   [ testCase "interruptible connectNamedPipe"
       test_interruptible_connectNamedPipe
   , testCase "interruptible readHandle"
       test_interruptible_readHandle
   , testCase "interruptible readHandle twice (synchronous)"
       test_interruptible_readHandle_sync
-  , testCase "interruptible readHandle twice (async)"
-      test_interruptible_read_async
   , testCase "concurrent read and write"
       test_concurrent_read_and_write
   , testProperty "writeHandle & readHandle"         prop_WriteRead
   , testProperty "writeHandle & readHandle (large)" prop_WriteReadLarge
-  , testProperty "interruptible writeHandle"        prop_interruptible_Write
+  , testProperty "interruptible writeHandle"        prop_interruptible_writeHandle
 
-  , testProperty "PingPong Stress test"         (withMaxSuccess 75 prop_PingPong)
+  , testProperty "PingPong test"                    prop_PingPong
+  , testProperty "PingPongPipelined test"           prop_PingPongPipelined
 
   , testGroup "generators"
     [ testProperty "NonEmptyBS" prop_NonEmptyBS
@@ -134,10 +142,8 @@ test_interruptible_readHandle_sync =
                 killThread tid'
 
 
--- | Interrupt two simultanous reads.
---
-test_interruptible_read_async :: IO ()
-test_interruptible_read_async =
+test_concurrent_read_and_write :: IO ()
+test_concurrent_read_and_write =
     bracket ((,) <$> createNamedPipe pipeName
                                      pIPE_ACCESS_DUPLEX
                                      (pIPE_TYPE_BYTE .|. pIPE_READMODE_BYTE)
@@ -154,12 +160,22 @@ test_interruptible_read_async =
                                 fILE_ATTRIBUTE_NORMAL
                                 Nothing)
             (foldMap closeHandle)
-            $ \(_, hpipe') -> do
-              tid  <- forkIO (void $ readHandle hpipe' 1 Nothing)
-              tid' <- forkIO (void $ readHandle hpipe' 1 Nothing)
-              threadDelay 100
-              killThread tid
-              killThread tid'
+            $ \(hServer, hClient) -> do
+              -- connectNamedPipe hServer Nothing
+              let x = BSC.pack (replicate 2_500_000 'x')
+                  y = BSC.pack (replicate 2_500_000 'y')
+              clientVar <- newEmptyMVar
+              _ <- forkIO $ do
+                y' <- readHandle hClient (BS.length y) Nothing
+                putMVar clientVar y'
+              _ <- forkIO $ do
+                threadDelay 100
+                writeHandle hClient x Nothing
+              threadDelay 200
+              writeHandle hServer y Nothing
+              x' <- readHandle hServer (BS.length x) Nothing
+              y' <- takeMVar clientVar
+              assertBool "concurrent read and write" $ x == x' && y == y'
 
 
 -- | Small non-empty 'ByteString's.
@@ -239,8 +255,8 @@ prop_WriteReadLarge :: LargeNonEmptyBS -> Property
 prop_WriteReadLarge = ioProperty . test_WriteRead . getLargeNonEmptyBS
 
 
-prop_interruptible_Write :: Property
-prop_interruptible_Write = ioProperty $ do
+prop_interruptible_writeHandle :: Property
+prop_interruptible_writeHandle = ioProperty $ do
     let bs = BSC.pack $ replicate 100 'a'
     v <- newEmptyMVar
 
@@ -290,8 +306,12 @@ instance Exception ChannelError
 -- the payload).  Note that the pipe does buffering of ingress and egress
 -- bytes, and thus both operation can block.
 --
-handleToBinaryChannel :: Binary a => HANDLE -> BinaryChannel a
-handleToBinaryChannel h = BinaryChannel { readChannel, writeChannel, closeChannel }
+handleToBinaryChannel :: Binary a
+                      => (Int -> IO ByteString)
+                      -> (ByteString -> IO ())
+                      -> HANDLE
+                      -> BinaryChannel a
+handleToBinaryChannel readH writeH h = BinaryChannel { readChannel, writeChannel, closeChannel }
     where
       -- send all chunks through the pipe
       writeChannel b a = do
@@ -300,9 +320,9 @@ handleToBinaryChannel h = BinaryChannel { readChannel, writeChannel, closeChanne
             size   :: Int
             size   = bool (+1) id b $ foldl' (\x y -> x + BS.length y) 0 chunks
         -- send header
-        _ <- writeHandle h (BSL.toStrict $ encode size) Nothing -- just a single chunk
+        _ <- writeH (BSL.toStrict $ encode size) -- just a single chunk
         -- send payload
-        traverse_ (\chunk -> writeHandle h chunk Nothing) chunks
+        traverse_ (\chunk -> writeH chunk) chunks
 
       readChannel b = do
         bs <- readLen [] 8
@@ -315,7 +335,7 @@ handleToBinaryChannel h = BinaryChannel { readChannel, writeChannel, closeChanne
 
       readLen !bufs 0 = pure $ BS.concat (reverse bufs)
       readLen !bufs s = do
-        bs <- readHandle h s Nothing
+        bs <- readH s
         when (BS.null bs)
           $ throwIO ReceivedNullBytes
         readLen (bs : bufs) (s - fromIntegral (BS.length bs))
@@ -328,16 +348,26 @@ handleToBinaryChannel h = BinaryChannel { readChannel, writeChannel, closeChanne
 
 data PingPongClient a
     = SendPing !a (a -> IO (PingPongClient a))
+    | Done
+    -- ^ for the sake of simplicity we never send a terminating message
 
-constPingPongClient :: a -> PingPongClient a
-constPingPongClient !a = SendPing a ((\b -> pure $ constPingPongClient b))
+-- Send n request and the reply the last message to the server
+listPingPongClient :: [a] -> PingPongClient a
+listPingPongClient = go
+  where
+    go []       = Done
+    go (a : as) = SendPing a (\_ -> pure $ go as)
 
-data Blocking = BlockOnRead | BlockOnWrite
+constPingPongClient :: Int -> a -> PingPongClient a
+constPingPongClient n a = listPingPongClient (replicate n a)
+
+data Blocking = BlockOnRead | BlockOnWrite | NonBlocking
   deriving Show
 
 instance Arbitrary Blocking where
-    arbitrary = frequency [ (2, pure BlockOnRead)
-                          , (1, pure BlockOnWrite)
+    arbitrary = frequency [ (3, pure BlockOnRead)
+                          , (2, pure BlockOnWrite)
+                          , (1, pure NonBlocking)
                           ]
 
 runPingPongClient :: BinaryChannel a
@@ -345,47 +375,66 @@ runPingPongClient :: BinaryChannel a
                   -> ThreadId  -- producer thread
                   -> Int       -- kill producer after that many messages
                   -> PingPongClient a
-                  -> IO ()
-runPingPongClient channel blocking tid = go
+                  -> IO [a]
+runPingPongClient channel blocking tid = go []
     where
-      go 0 (SendPing a _) = do
+      go !res 0 (SendPing a next) = do
         -- send the message, but report more bytes to the server; this makes
         -- sure that it will blocked on reading when we kill it
         case blocking of
           BlockOnRead -> do
             writeChannel channel False a
             killThread tid
+            pure $ reverse res
+          BlockOnWrite -> do
+            writeChannel channel True a
+            Just r <- readChannel channel False
+            killThread tid
+            pure $ reverse (r : res)
+          NonBlocking -> do
+            Just r <- readChannel channel False
+            next r >>= go (r : res) 0
+      go !res n (SendPing a next) = do
+        writeChannel channel True a
+        Just r <- readChannel channel True
+        next r >>= go (r : res) (pred n)
+      go !res _ Done = pure $ reverse res
+
+
+-- Do pipelining, the the client will never read, instead it will kill the
+-- server.
+runPingPongClientPipelined :: BinaryChannel a
+                           -> Blocking
+                           -> ThreadId
+                           -> [a]
+                           -> IO (Maybe [a])
+runPingPongClientPipelined channel blocking tid as0 = goSend as0
+    where
+      goSend []  = error "runPingPongClientPipelined: expected non empty list"
+      goSend [a] = do
+        -- send the message, but report more bytes to the server; this makes
+        -- sure that it will blocked on reading when we kill it
+        case blocking of
+          BlockOnRead -> do
+            writeChannel channel False a
+            killThread tid
+            pure Nothing
           BlockOnWrite -> do
             writeChannel channel True a
             _ <- readChannel channel False
             killThread tid
-      go n (SendPing a k) = do
+            pure Nothing
+          NonBlocking -> do
+            writeChannel channel True a
+            goRecv [] as0
+      goSend (a : as) = do
         writeChannel channel True a
-        Just b <- readChannel channel True
-        k b >>= go (pred n)
+        goSend as
 
-
-forkPingPongClient :: forall a.
-                      Binary a
-                   => String
-                   -> Blocking
-                   -> ThreadId
-                   -> Int
-                   -> PingPongClient a
-                   -> IO ThreadId
-forkPingPongClient pname blocking tid n client = do
-  channel <-
-    handleToBinaryChannel
-      <$> createFile pname
-                     (gENERIC_READ .|. gENERIC_WRITE)
-                     fILE_SHARE_NONE
-                     Nothing
-                     oPEN_EXISTING
-                     fILE_ATTRIBUTE_NORMAL
-                     Nothing
-  forkIO
-    (runPingPongClient channel blocking tid n client
-      `finally` closeChannel channel)
+      goRecv res []       = pure (Just $ reverse res)
+      goRecv res (_ : as) = do
+        Just r <- readChannel channel True
+        goRecv (r : res) as
 
 
 --
@@ -402,79 +451,186 @@ constPingPongServer = PingPongServer {
     recvPing = \a -> pure (a, constPingPongServer)
   }
 
-runPingPongServer :: BinaryChannel a
+runPingPongServer :: Int -- only read n messaeges
+                  -> BinaryChannel a
                   -> PingPongServer a
                   -> IO ()
-runPingPongServer channel PingPongServer { recvPing } = do
+runPingPongServer 0 _       _ = pure ()
+runPingPongServer n channel PingPongServer { recvPing } = do
     Just a <- readChannel channel True
     (a', server') <- recvPing a
     writeChannel channel True a'
-    runPingPongServer channel server'
+    runPingPongServer (pred n) channel server'
 
 forkPingPongServer :: forall a.
                       Binary a
-                   => String
-                   -> DWORD  -- input & output buffer size of named pipe
+                   => Int
+                   -> HANDLE
+                   -> BinaryChannel a
                    -> PingPongServer a
                    -> IO (ThreadId, MVar ())
-forkPingPongServer pname bufSize server = do
+forkPingPongServer n h channel server = do
       var <- newEmptyMVar
-      hpipe <- createNamedPipe pname
-                               pIPE_ACCESS_DUPLEX
-                               (pIPE_TYPE_BYTE .|. pIPE_READMODE_BYTE)
-                               pIPE_UNLIMITED_INSTANCES
-                               bufSize
-                               bufSize
-                               0
-                               Nothing
-      let channel = handleToBinaryChannel hpipe
-      tid <- mask $ \unmask -> forkIO $
+      tid <- forkIOWithUnmask $ \unmask ->
           unmask
             (do
-              -- the connectNamedPipe call is blocking, but we call it with async exceptions masked
-              connectNamedPipe hpipe Nothing
-              runPingPongServer channel server)
-        `finally` do
-            closeChannel channel
-            putMVar var ()
+              -- the connectNamedPipe call is blocking, but we call it with
+              -- async exceptions masked
+              --
+              -- TODO: once in a while this errors with `resource vanished`,
+              -- in this case the test passess.
+              connectNamedPipe h Nothing
+              runPingPongServer n channel server)
+          `finally` putMVar var ()
       pure (tid, var)
 
+
+-- 
+-- PingPong tests
+--
 
 -- | Stress test for named pipe ffi calls.
 --
 -- For each entry in @NonEmptyList (NonNegative Int)@ we run a single instance
--- of a ping pong protocol which will exchange that many messages.  When the
--- client sends its last message, it misinforms the server about the size of
--- the message, and kills the server thread.  This ensure that when we kill the
--- server it is blocked on reading.
+-- of a ping pong protocol which will exchange that many messages.  Each
+-- instance runs on it's own named pipe.  When the client sends its last message, it
+-- misinforms the server about the size of the message, and kills the server
+-- thread.  This ensure that when we kill the server it is blocked on reading.
 --
-prop_PingPong :: NonEmptyList (NonNegative Int, Blocking)
-              -- ^ each list element denotes the number of messages exchanged
-              -- in the ping pong protocol
+test_PingPong :: (HANDLE -> BinaryChannel ByteString)
+              -> (String -> DWORD -> IO HANDLE)
+              -> (String          -> IO HANDLE)
+              -> Int
+              -- ^ the number of messages exchanged in the ping pong protocol
+              -> Blocking
+              -> LargeNonEmptyBS
+              -> IO Bool
+test_PingPong handleToBinaryChannelK
+              createNamedPipeK
+              createFileK
+              n
+              blocking
+              (LargeNonEmptyBS bs bufSize) = do
+
+    let pname = pipeName ++ "-ping-pong"
+
+    -- fork the PingPong server
+    h <- createNamedPipeK pname (fromIntegral bufSize)
+    let channel = handleToBinaryChannelK h
+    (tid, lock) <- forkPingPongServer
+                      n h channel
+                      (constPingPongServer @ByteString)
+
+    -- run the PingPong client
+    channel' <- handleToBinaryChannelK <$> createFileK pname
+    res <- runPingPongClient channel' blocking tid n (constPingPongClient n bs)
+
+    -- await until server is killed
+    takeMVar lock
+    closeChannel channel
+    closeChannel channel'
+
+    pure $ res == replicate n bs
+
+
+prop_PingPong :: NonNegative Int
+              -- ^ number of messages exchanged in the ping pong protocol
+              -> Blocking
               -> LargeNonEmptyBS
               -> Property
-prop_PingPong (NonEmpty ns) (LargeNonEmptyBS bs bufSize) =
-    ioProperty $ do
-      -- fork servers
-      tidsAndLocks <-
-        traverse
-          (\pname ->
-            forkPingPongServer
-              pname
-              (fromIntegral bufSize)
-              (constPingPongServer @ByteString))
-          pnames
+prop_PingPong (NonNegative n) blocking bss = ioProperty $
+    test_PingPong
+      (\h -> handleToBinaryChannel
+               (\s  -> readHandle  h s Nothing)
+               (\bs -> writeHandle h bs Nothing)
+               h)
+      (\name  bufSize -> createNamedPipe name
+                                pIPE_ACCESS_DUPLEX
+                                (pIPE_TYPE_BYTE .|. pIPE_READMODE_BYTE)
+                                pIPE_UNLIMITED_INSTANCES
+                                (fromIntegral bufSize)
+                                (fromIntegral bufSize)
+                                0
+                                Nothing)
+      (\name -> createFile name
+                           (gENERIC_READ .|. gENERIC_WRITE)
+                           fILE_SHARE_NONE
+                           Nothing
+                           oPEN_EXISTING
+                           fILE_ATTRIBUTE_NORMAL
+                           Nothing)
+      n blocking bss
 
-      -- fork clients
-      traverse_
-        (\(tid, pname, (NonNegative k, blocking)) -> forkPingPongClient pname blocking tid k (constPingPongClient bs))
-        (zip3 (map fst tidsAndLocks)
-              pnames
-              ns)
 
-      -- await until all servers are killed
-      traverse_ (\(_, lock) -> takeMVar lock) tidsAndLocks
+--
+-- Pipelined PingPong test
+--
 
-      pure True
-  where
-    pnames = map (\x -> "\\\\.\\pipe\\nWin32-named-pipes-test-" ++ show x) [1..(length ns)]
+
+test_PingPongPipelined :: (HANDLE -> BinaryChannel ByteString)
+                       -> (String -> IO HANDLE)
+                       -> (String -> IO HANDLE)
+                       -> Blocking
+                       -> [ByteString]
+                       -- non empty list of requests
+                       -> IO Bool
+test_PingPongPipelined handleToBinaryChannelK
+              createNamedPipeK
+              createFileK
+              blocking
+              bss = do
+
+    let pname = pipeName ++ "-ping-pong-pipelined"
+
+    -- fork the PingPong server
+    h <- createNamedPipeK pname
+    let channel = handleToBinaryChannelK h
+    (tid, lock) <-
+        forkPingPongServer
+          (length bss) h channel
+          (constPingPongServer @ByteString)
+
+    -- run the PingPong client
+    channel' <- handleToBinaryChannelK <$> createFileK pname
+    res <- runPingPongClientPipelined channel' blocking tid bss
+
+    takeMVar lock
+    closeChannel channel
+    closeChannel channel'
+    case blocking of
+      NonBlocking -> case res of
+        Just bss' -> pure $ bss == bss'
+        Nothing   -> pure False
+      _           -> pure True -- if we evalute this case branch, it means that
+                               -- killing blocked thread did not deadlock.
+
+
+prop_PingPongPipelined :: Blocking
+                       -> Positive Int
+                       -- ^ in-bound buffer size
+                       -> NonEmptyList LargeNonEmptyBS
+                       -> Property
+prop_PingPongPipelined blocking (Positive bufSize) (NonEmpty bss) = ioProperty $
+    test_PingPongPipelined
+      (\h -> handleToBinaryChannel
+               (\s  -> readHandle  h s Nothing)
+               (\bs -> writeHandle h bs Nothing)
+               h)
+      (\name -> createNamedPipe name
+                                pIPE_ACCESS_DUPLEX
+                                (pIPE_TYPE_BYTE .|. pIPE_READMODE_BYTE)
+                                pIPE_UNLIMITED_INSTANCES
+                                (fromIntegral bufSize)
+                                maxBound -- outbout queue must be atleast n *
+                                         -- size of the bytestring, so that the
+                                         -- client will not bclok.
+                                0
+                                Nothing)
+      (\name -> createFile name
+                           (gENERIC_READ .|. gENERIC_WRITE)
+                           fILE_SHARE_NONE
+                           Nothing
+                           oPEN_EXISTING
+                           fILE_ATTRIBUTE_NORMAL
+                           Nothing)
+      blocking (map getLargeNonEmptyBS bss)

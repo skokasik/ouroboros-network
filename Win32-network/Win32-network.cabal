@@ -12,7 +12,7 @@ maintainer:          duncan@well-typed.com, marcin.szamotulski@iohk.io
 copyright:           2019 Input Output (Hong Kong) Ltd.
 category:            System
 build-type:          Simple
-extra-source-files:  ChangeLog.md
+-- extra-source-files:  ChangeLog.md
 cabal-version:       >=1.10
 
 flag demo
@@ -22,6 +22,7 @@ flag demo
 library
   hs-source-dirs:      src
   exposed-modules:     System.Win32.NamedPipes
+                       System.Win32.Async
                        System.Win32.Event
                        System.Win32.CompletionPort
                        System.Win32.Types.Overlapped
@@ -56,15 +57,17 @@ test-suite test-Win32-network
   ghc-options:         -Wall
                        -threaded
   other-modules:       Test.NamedPipes
+                       Test.Async
                        Test.Event
-  build-depends:       base,
+  build-depends:       async,
+                       base,
                        binary,
                        bytestring,
                        stm,
                        tasty,
                        tasty-hunit,
                        tasty-quickcheck,
-                       QuickCheck        >= 2.13.2,
+                       QuickCheck        >= 2.13.1,
                        quickcheck-instances,
                        Win32,
                        Win32-network
