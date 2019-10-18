@@ -34,12 +34,13 @@ class ( MonadSTM m
       , Functor (Async m)
       ) => MonadAsync m where
 
-  {-# MINIMAL async, asyncThreadId, cancel, cancelWith, waitCatchSTM, pollSTM #-}
+  {-# MINIMAL async, asyncBound, asyncThreadId, cancel, cancelWith, waitCatchSTM, pollSTM #-}
 
   -- | An asynchronous action
   type Async m :: * -> *
 
   async                 :: m a -> m (Async m a)
+  asyncBound            :: m a -> m (Async m a)
   asyncThreadId         :: proxy m -> Async m a -> ThreadId m
   withAsync             :: m a -> (Async m a -> m b) -> m b
 
@@ -240,6 +241,7 @@ instance MonadAsync IO where
   type Async IO = Async.Async
 
   async                 = Async.async
+  asyncBound            = Async.asyncBound
   asyncThreadId         = \_proxy -> Async.asyncThreadId
   withAsync             = Async.withAsync
 

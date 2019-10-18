@@ -342,6 +342,8 @@ instance MonadAsync (SimM s) where
              fork $ try (restore action) >>= atomically . putTMVar var
     return (Async tid id var)
 
+  asyncBound = async
+
   asyncThreadId _proxy (Async tid _ _) = tid
 
   cancel a@(Async tid _ _) = throwTo tid AsyncCancelled <* waitCatch a
