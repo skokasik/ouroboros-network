@@ -77,9 +77,10 @@ demux :: (MonadSTM m, MonadSay m, MonadThrow (STM m), Ord ptcl, Enum ptcl, Show
          , MiniProtocolLimits ptcl, HasCallStack)
       => PerMuxSharedState ptcl m -> m ()
 demux pmss = forever $ do
+    say $ "demuxing: read bearer"
     (sdu, _) <- Network.Mux.Types.read $ bearer pmss
-    -- say $ printf "demuxing sdu on mid %s mode %s lenght %d " (show $ msId sdu) (show $ msMode sdu)
-    --             (BL.length $ msBlob sdu)
+    say $ printf "demuxing sdu on mid %s mode %s lenght %d " (show $ msId sdu) (show $ msMode sdu)
+                (BL.length $ msBlob sdu)
     atomically $ do
         -- Notice the mode reversal, ModeResponder is delivered to ModeInitiator and vice versa.
         let q = ingressQueue (dispatchTable pmss) (msId sdu) (negMiniProtocolMode $ msMode sdu)

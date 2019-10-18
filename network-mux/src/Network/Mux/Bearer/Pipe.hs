@@ -9,25 +9,38 @@ module Network.Mux.Bearer.Pipe (
     PipeChannel (..)
   , pipeChannelFromHandles
 #if defined(mingw32_HOST_OS)
-  , pipeChannelFromHANDLES
+  -- , winio_pipeChannelFromHANDLE
+  , pipeChannelFromHANDLE
+  , pipeChannelFromHANDLE_Ev
 #endif
   , pipeAsMuxBearer
   , runMuxWithPipes
   ) where
 
+import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadSTM.Strict
 import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadTime
 import           Control.Tracer
 import           Data.Word
+import           Data.ByteString (ByteString)
+import qualified Data.ByteString.Internal as BS
+import qualified Data.ByteString.Unsafe as BS (unsafeUseAsCStringLen)
 import qualified Data.ByteString.Lazy as BL
 import           Data.Foldable (traverse_)
 import           GHC.Stack
 import           System.IO (Handle, hFlush)
 
 #if defined(mingw32_HOST_OS)
-import qualified System.Win32.Types      as Win32 (HANDLE)
-import qualified System.Win32.NamedPipes as Win32
+import           Foreign (castPtr)
+import           Foreign.Marshal.Utils (with)
+import           System.Win32.Types                   (HANDLE)
+import qualified System.Win32.Types          as Win32 (failIfFalse_)
+import           System.Win32.Types.Overlapped        (OVERLAPPED (..))
+import qualified System.Win32.Event          as Win32
+import qualified System.Win32.CompletionPort as Win32
+import qualified System.Win32.Async          as Win32.Async
+import qualified System.Win32.NamedPipes     as Win32.NamedPipes
 #endif
 
 import qualified Network.Mux as Mx
@@ -36,7 +49,6 @@ import qualified Network.Mux.Types as Mx
 import qualified Network.Mux.Codec as Mx
 import qualified Network.Mux.Interface as Mx
 import qualified Network.Mux.Time as Mx
-
 
 -- | Abstraction over various types of handles.  We provide two instances:
 --
@@ -61,17 +73,78 @@ pipeChannelFromHandles r w = PipeChannel {
     flushHandle = hFlush w
   }
 
+
 #if defined(mingw32_HOST_OS)
-pipeChannelFromHANDLES :: Win32.HANDLE
-                       -- ^ read handle
-                       -> Win32.HANDLE
-                       -- ^ write handle
-                       -> PipeChannel
-pipeChannelFromHANDLES r w = PipeChannel {
-      readHandle  = fmap BL.fromStrict . Win32.readPipe r,
-      writeHandle = traverse_ (Win32.writePipe w) . BL.toChunks,
-      flushHandle = pure () -- TODO
-    }
+pipeChannelFromHANDLE :: HANDLE
+                      -- ^ file handle
+                      -> HANDLE
+                      -- ^ I/O completion port
+                      -> IO PipeChannel
+pipeChannelFromHANDLE h port = do
+    -- todo: close the thread
+    _ <- asyncBound $ do
+      Win32.Async.handleCompletions port
+        `catch` (\(e :: SomeException) -> print e >> throwM e)
+    Win32.failIfFalse_ "pipeChannelFromHANDLE.createCompletionPort"
+      $ (== port) <$> Win32.createIoCompletionPort h port 0 0
+    return PipeChannel {
+        readHandle  = fmap BL.fromStrict . readPipe,
+        writeHandle = traverse_ writePipe . BL.toChunks,
+        flushHandle = pure ()
+      }
+  where
+    readPipe :: Int -> IO ByteString
+    readPipe = Win32.Async.read h
+
+    writePipe :: ByteString -> IO ()
+    writePipe = Win32.Async.write h
+#endif
+
+#if defined(mingw32_HOST_OS)
+pipeChannelFromHANDLE_Ev :: HANDLE
+                         -> IO PipeChannel
+pipeChannelFromHANDLE_Ev h = do
+    evRead  <- Win32.createEvent Nothing False False "evRead"
+    evWrite <- Win32.createEvent Nothing False False "evWrite"
+    pure PipeChannel
+         { readHandle  = readHandle_ evRead
+         , writeHandle = traverse_ (writeHandle_ evWrite) . BL.toChunks
+         , flushHandle = pure ()
+         }
+  where
+    readHandle_ :: HANDLE
+                -> Int
+                -> IO BL.ByteString
+    readHandle_ ev size = BL.fromStrict <$> BS.createAndTrim size
+      (\ptr -> do
+        let ovl = OVERLAPPED
+              { ovl_internal     = 0
+              , ovl_internalHigh = 0
+              , ovl_offset       = 0
+              , ovl_offsetHigh   = 0
+              , ovl_hEvent       = ev
+              }
+        _ <- Win32.NamedPipes.win32_ReadFile h ptr (fromIntegral size) (Just ovl)
+        _ <- Win32.waitForSingleObject ev maxBound
+        -- TODO: how to get the correct size?
+        pure size)
+
+    writeHandle_ :: HANDLE
+                 -> ByteString
+                 -> IO ()
+    writeHandle_ ev bs = BS.unsafeUseAsCStringLen bs $
+      \(str, len) ->
+        let ovl = OVERLAPPED
+              { ovl_internal     = 0
+              , ovl_internalHigh = 0
+              , ovl_offset       = 0
+              , ovl_offsetHigh   = 0
+              , ovl_hEvent       = ev
+              }
+        in with ovl $ \ovl_ptr -> do
+          _ <- Win32.NamedPipes.win32_WriteFile h (castPtr str) (fromIntegral len) ovl_ptr
+          _ <- Win32.waitForSingleObject ev maxBound
+          pure ()
 #endif
 
 pipeAsMuxBearer
@@ -146,7 +219,6 @@ runMuxWithPipes
     -> PipeChannel
     -> IO ()
 runMuxWithPipes tracer peerid app channel = do
-    let muxTracer = Mx.WithMuxBearer "Pipe" `contramap` tracer
-    bearer <- pipeAsMuxBearer muxTracer channel
-    Mx.muxStart muxTracer peerid app bearer
+    bearer <- pipeAsMuxBearer tracer channel
+    Mx.muxStart tracer peerid app bearer
 

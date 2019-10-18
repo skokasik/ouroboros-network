@@ -110,10 +110,9 @@ runMuxWithQueues
   -> Maybe (TBQueue m (Mx.MiniProtocolId ptcl, Mx.MiniProtocolMode, Time))
   -> m (Maybe SomeException)
 runMuxWithQueues tracer peerid app wq rq mtu trace =
-    let muxTracer = Mx.WithMuxBearer "Queue" `contramap` tracer in
-    bracket (queuesAsMuxBearer muxTracer wq rq mtu trace)
+    bracket (queuesAsMuxBearer tracer wq rq mtu trace)
       (\_ -> pure ()) $ \bearer -> do
-        res_e <- try $ Mx.muxStart muxTracer peerid app bearer
+        res_e <- try $ Mx.muxStart tracer peerid app bearer
         case res_e of
              Left  e -> return (Just e)
              Right _ -> return Nothing

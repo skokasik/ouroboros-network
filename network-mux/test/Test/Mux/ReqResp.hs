@@ -20,6 +20,7 @@ import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString as BS
 
 import           Control.Monad.Class.MonadST
+import           Control.Monad.Class.MonadSay
 import           Control.Tracer (Tracer, traceWith)
 
 import           Network.Mux.Channel
@@ -168,6 +169,7 @@ data ReqRespServer req resp m a = ReqRespServer {
 
 runServer :: forall req resp m a.
              ( Monad m
+             , MonadSay m
              , Serialise req
              , Serialise resp
              , Show req
@@ -186,6 +188,7 @@ runServer tracer channel@Channel {send} =
        -> ReqRespServer req resp m a
        -> m a
     go trailing ReqRespServer {recvMsgReq, recvMsgDone} = do
+      say "ReqRespServer: waiting for message"
       res <- withLiftST $ \liftST -> runDecoderWithChannel
                                         liftST channel trailing decode
       case res of
