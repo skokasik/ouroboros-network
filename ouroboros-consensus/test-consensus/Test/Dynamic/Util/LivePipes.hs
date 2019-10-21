@@ -124,6 +124,7 @@ blockUntilQuiescent livePipesVar dur = get >>= go
 -- 'Channel' assumptions: reliability, order preservation, etc. Each send
 -- blocks for a random amount (uniform) of time, and each message takes a
 -- random amount (uniform) of time to travel from the sender to the receiver.
+-- Moreover, each message only begins traveling once the previous arrives.
 --
 -- NOTE This mock \"physical layer\" carries one message at a time (hence the
 -- name 'maxVar1Latency'). Though it uses queues so that a (pipelined) sender
