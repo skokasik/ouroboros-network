@@ -50,6 +50,7 @@ import           Test.Dynamic.TxGen
 import           Test.Dynamic.Util
 import           Test.Dynamic.Util.NodeJoinPlan
 import           Test.Dynamic.Util.NodeTopology
+import           Test.Dynamic.Util.OutagesPlan
 
 import           Test.Util.FS.Sim.MockFS (MockFS)
 import qualified Test.Util.FS.Sim.MockFS as Mock
@@ -204,6 +205,7 @@ runTestNetwork pInfo
       , nnaQuiescenceThreshold = 50000   -- io-sim "seconds"
       , nnaNodeTopology        = nodeTopology
       , nnaNumCoreNodes        = numCoreNodes
+      , nnaOutagesPlan         = emptyOutagesPlan
       , nnaProtocol            = pInfo
       , nnaRegistry            = registry
       , nnaTestBtime           = testBtime
