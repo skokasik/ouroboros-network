@@ -272,6 +272,7 @@ test-suite test-consensus
                     Test.Dynamic.Util.LivePipes
                     Test.Dynamic.Util.NodeJoinPlan
                     Test.Dynamic.Util.NodeTopology
+                    Test.Dynamic.Util.OutagesPlan
                     Test.Dynamic.Util.Tests
                     Test.Ouroboros
                     Test.Util.DepFn
