@@ -8,7 +8,7 @@
 module Test.NamedPipes (tests) where
 
 import           Control.Concurrent.MVar
-import           Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
+import           Control.Concurrent
 import           Control.Exception (AsyncException (..), Exception, catch, bracket, finally, throwIO, mask)
 import           Control.Monad (when)
 import           Data.Functor (void)
@@ -23,6 +23,7 @@ import qualified Data.ByteString.Char8 as BSC
 
 import           System.Win32
 import           System.Win32.NamedPipes
+import           System.Win32.File.Interruptible
 
 import           Test.Tasty
 import           Test.Tasty.HUnit
@@ -38,15 +39,17 @@ tests =
   testGroup "NamedPipes"
   [ testCase "interruptible connectNamedPipe"
       test_interruptible_connectNamedPipe
-  , testCase "interruptible readPipe"
-      test_interruptible_readPipe
-  , testCase "interruptible readPipe twice (synchronous)"
-      test_interruptible_readPipe_sync
-  , testCase "interruptible readPipe twice (concurrent)"
-      test_interruptible_readPipe_conc
-  , testProperty "writePipe & readPipe"         prop_WriteRead
-  , testProperty "writePipe & readPipe (large)" prop_WriteReadLarge
-  , testProperty "interruptible writePipe"      prop_interruptible_Write
+  , testCase "interruptible readHandle"
+      test_interruptible_readHandle
+  , testCase "interruptible readHandle twice (synchronous)"
+      test_interruptible_readHandle_sync
+  , testCase "interruptible readHandle twice (async)"
+      test_interruptible_read_async
+  , testCase "concurrent read and write"
+      test_concurrent_read_and_write
+  , testProperty "writeHandle & readHandle"         prop_WriteRead
+  , testProperty "writeHandle & readHandle (large)" prop_WriteReadLarge
+  , testProperty "interruptible writeHandle"        prop_interruptible_Write
 
   , testProperty "PingPong Stress test"         (withMaxSuccess 75 prop_PingPong)
 
@@ -70,16 +73,16 @@ test_interruptible_connectNamedPipe =
                              512
                              0
                              Nothing)
-            closePipe
+            closeHandle
             $ \hpipe -> do
                 tid <- forkIO (connectNamedPipe hpipe Nothing)
                 threadDelay 100
                 killThread tid
 
--- | Check if 'readPipe'`is interruptible
+-- | Check if 'readHandle'`is interruptible
 --
-test_interruptible_readPipe :: IO ()
-test_interruptible_readPipe =
+test_interruptible_readHandle :: IO ()
+test_interruptible_readHandle =
     bracket ((,) <$> createNamedPipe pipeName
                                      pIPE_ACCESS_DUPLEX
                                      (pIPE_TYPE_BYTE .|. pIPE_READMODE_BYTE)
@@ -96,16 +99,16 @@ test_interruptible_readPipe =
                                 fILE_ATTRIBUTE_NORMAL
                                 Nothing)
             -- 'IO ()' is a monoid!
-            (foldMap closePipe)
+            (foldMap closeHandle)
             $ \(_,     hpipe') -> do
-                tid <- forkIO (void $ readPipe hpipe' 1 Nothing)
+                tid <- forkIO (void $ readHandle hpipe' 1 Nothing)
                 threadDelay 100
                 killThread tid
 
 -- | Interrupt two consecutive reads.
 --
-test_interruptible_readPipe_sync :: IO ()
-test_interruptible_readPipe_sync =
+test_interruptible_readHandle_sync :: IO ()
+test_interruptible_readHandle_sync =
     bracket ((,) <$> createNamedPipe pipeName
                                      pIPE_ACCESS_DUPLEX
                                      (pIPE_TYPE_BYTE .|. pIPE_READMODE_BYTE)
@@ -121,12 +124,12 @@ test_interruptible_readPipe_sync =
                                 oPEN_EXISTING
                                 fILE_ATTRIBUTE_NORMAL
                                 Nothing)
-             (foldMap closePipe)
+             (foldMap closeHandle)
              $ \(_,     hpipe') -> do
-                tid <- forkIO (void $ readPipe hpipe' 1 Nothing)
+                tid <- forkIO (void $ readHandle hpipe' 1 Nothing)
                 threadDelay 100
                 killThread tid
-                tid' <- forkIO (void $ readPipe hpipe' 1 Nothing)
+                tid' <- forkIO (void $ readHandle hpipe' 1 Nothing)
                 threadDelay 100
                 killThread tid'
 
@@ -150,10 +153,10 @@ test_interruptible_read_async =
                                 oPEN_EXISTING
                                 fILE_ATTRIBUTE_NORMAL
                                 Nothing)
-            (foldMap closePipe)
+            (foldMap closeHandle)
             $ \(_, hpipe') -> do
-              tid  <- forkIO (void $ readPipe hpipe' 1 Nothing)
-              tid' <- forkIO (void $ readPipe hpipe' 1 Nothing)
+              tid  <- forkIO (void $ readHandle hpipe' 1 Nothing)
+              tid' <- forkIO (void $ readHandle hpipe' 1 Nothing)
               threadDelay 100
               killThread tid
               killThread tid'
@@ -224,9 +227,9 @@ test_WriteRead bs =
                                 oPEN_EXISTING
                                 fILE_ATTRIBUTE_NORMAL
                                 Nothing)
-            (foldMap closePipe)
+            (foldMap closeHandle)
             $ \(r,w) -> do
-              bs' <- writePipe w bs Nothing >> readPipe r (BS.length bs) Nothing
+              bs' <- writeHandle w bs Nothing >> readHandle r (BS.length bs) Nothing
               pure (bs == bs')
 
 prop_WriteRead :: NonEmptyBS -> Property
@@ -257,11 +260,11 @@ prop_interruptible_Write = ioProperty $ do
                           oPEN_EXISTING
                           fILE_ATTRIBUTE_NORMAL
                           Nothing)
-      (foldMap closePipe)
+      (foldMap closeHandle)
       $ \(_,w) -> do
 
         tid <- mask $ \unmask -> forkIO $ void $
-          unmask (writePipe w bs Nothing)
+          unmask (writeHandle w bs Nothing)
             `catch` \(e :: AsyncException) -> putMVar v e >> throwIO e
 
         killThread tid
@@ -297,9 +300,9 @@ handleToBinaryChannel h = BinaryChannel { readChannel, writeChannel, closeChanne
             size   :: Int
             size   = bool (+1) id b $ foldl' (\x y -> x + BS.length y) 0 chunks
         -- send header
-        _ <- writePipe h (BSL.toStrict $ encode size) Nothing -- just a single chunk
+        _ <- writeHandle h (BSL.toStrict $ encode size) Nothing -- just a single chunk
         -- send payload
-        traverse_ (\chunk -> writePipe h chunk Nothing) chunks
+        traverse_ (\chunk -> writeHandle h chunk Nothing) chunks
 
       readChannel b = do
         bs <- readLen [] 8
@@ -312,14 +315,12 @@ handleToBinaryChannel h = BinaryChannel { readChannel, writeChannel, closeChanne
 
       readLen !bufs 0 = pure $ BS.concat (reverse bufs)
       readLen !bufs s = do
-        bs <- readPipe h s Nothing
+        bs <- readHandle h s Nothing
         when (BS.null bs)
           $ throwIO ReceivedNullBytes
         readLen (bs : bufs) (s - fromIntegral (BS.length bs))
         
-
-
-      closeChannel = closePipe h
+      closeChannel = closeHandle h
 
 --
 -- PingPong Client API

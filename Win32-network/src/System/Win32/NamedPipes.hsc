@@ -33,34 +33,20 @@ module System.Win32.NamedPipes (
     -- * Named pipe client APIs
     -- | This directly reuses other Win32 file APIs
     createFile,
-    closePipe,
-    readPipe,
-    pGetLine,
-    writePipe,
-    flushPipe,
     disconnectPipe,
-
-    -- * LowLevel system calls
-    win32_ReadFile,
-    win32_WriteFile,
 
     -- * Client and server APIs
     pipeToHandle,
   ) where
 
 
-import Control.Monad (when, unless)
-import Data.Functor (void)
-import           Data.ByteString (ByteString)
-import qualified Data.ByteString.Internal as BS
-import qualified Data.ByteString.Unsafe as BS (unsafeUseAsCStringLen)
-import qualified Data.ByteString.Char8 as BSC
+import Control.Monad (unless)
 import System.IO (Handle, IOMode, BufferMode(..), hSetBuffering)
 import GHC.IO.Device (IODeviceType(..))
 import GHC.IO.FD     (mkFD)
 import GHC.IO.Handle.FD (mkHandleFromFD)
 
-import Foreign hiding (void)
+import Foreign
 import Foreign.C
 import System.Win32.Types
 #if MIN_VERSION_Win32 (2, 7, 0)
@@ -75,7 +61,6 @@ import System.Win32.File hiding ( LPOVERLAPPED, win32_ReadFile, c_ReadFile
                                 , c_FlushFileBuffers
                                 )
 #endif
-import System.Win32.Async (eRROR_IO_PENDING)
 
 -- | The named pipe open mode.
 --
@@ -225,98 +210,8 @@ handleToFd hnd =
   _open_osfhandle (fromIntegral (ptrToIntPtr hnd))
                   (#const _O_BINARY)
 
-
--- | Close underlaying 'HANDLE'; It is just 'closeHandle' renamed for
--- consistency sake.
---
-closePipe :: HANDLE
-          -> IO ()
-closePipe = closeHandle
-
---
--- Read from a pipe
---
-
-
-win32_ReadFile :: HANDLE -> Ptr a -> DWORD -> Maybe OVERLAPPED -> IO DWORD
-win32_ReadFile h buf n mb_ovl =
-    alloca $ \ p_n -> do
-      maybeWith with mb_ovl
-        $ \ovl_ptr -> do
-          res <- c_ReadFile h buf n p_n ovl_ptr
-          unless res $ do
-            errCode <- getLastError
-            when (errCode /= eRROR_IO_PENDING)
-              $ failWith "win32_ReadFile" errCode
-      peek p_n
-
-foreign import ccall interruptible "windows.h ReadFile"
-  c_ReadFile :: HANDLE -> Ptr a -> DWORD -> Ptr DWORD -> LPOVERLAPPED -> IO Bool
-
--- | Interruptible read from a Windows 'HANDLE'.
---
-readPipe :: HANDLE
-         -> Int
-         -> Maybe OVERLAPPED
-         -> IO ByteString
-readPipe h size mb_ovl
-  = BS.createAndTrim size
-      (\ptr ->
-        fromIntegral <$>
-          win32_ReadFile h ptr (fromIntegral size) mb_ovl)
-
--- | Get a single line from a 'HANDLE'.
---
-pGetLine :: HANDLE
-         -> IO String
-pGetLine h = go ""
-    where
-      go :: String -> IO String
-      go !s = do
-        [x] <- BSC.unpack <$> readPipe h 1 Nothing
-        if x == '\n'
-          then pure (reverse s)
-          else go (x : s)
-
-
---
--- Write to a pipe
---
-
-win32_WriteFile :: HANDLE
-                -> Ptr a
-                -> DWORD
-                -> LPOVERLAPPED
-                -> IO DWORD
-win32_WriteFile h buf n over =
-  alloca $ \ p_n -> do
-  failIfFalse_ "WriteFile" $ c_WriteFile h buf n p_n over
-  peek p_n
-
-foreign import ccall interruptible "windows.h WriteFile"
-  c_WriteFile :: HANDLE -> Ptr a -> DWORD -> Ptr DWORD -> LPOVERLAPPED -> IO Bool
-
--- | Write a 'ByteString' to a pipe.
---
-writePipe :: HANDLE
-          -> ByteString
-          -> Maybe OVERLAPPED
-          -> IO ()
-writePipe h bs mb_ovl = BS.unsafeUseAsCStringLen bs $
-    \(str, len) ->
-        maybeWith with mb_ovl 
-          (void . win32_WriteFile h (castPtr str) (fromIntegral len))
-
-foreign import ccall interruptible "windows.h FlushFileBuffers"
-  c_FlushFileBuffers :: HANDLE -> IO Bool
-
-flushPipe :: HANDLE -> IO ()
-flushPipe = failIfFalse_ "FlushFileBuffers" . c_FlushFileBuffers
-
 foreign import ccall interruptible "windows.h DisconnectNamedPipe"
   c_DisconnectNamedPipe :: HANDLE -> IO Bool
 
 disconnectPipe :: HANDLE -> IO ()
 disconnectPipe = failIfFalse_ "DisconnectNamedPipe" . c_DisconnectNamedPipe
-
-
