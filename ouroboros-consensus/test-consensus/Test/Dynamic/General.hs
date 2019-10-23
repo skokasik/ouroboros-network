@@ -278,7 +278,7 @@ prop_general k TestConfig
     counterexample ("nodeChains: " <> unlines ("" : map (\x -> "  " <> condense x) (Map.toList nodeChains))) $
     counterexample ("nodeJoinPlan: " <> condense nodeJoinPlan) $
     counterexample ("nodeTopology: " <> condense nodeTopology) $
-    counterexample ("outagesPlan: " <> show outagesPlan) $
+    counterexample ("outagesPlan: " <> condense outagesPlan) $
     counterexample ("latencySeed: " <> show latencySeed) $
     counterexample ("slot-node-tipBlockNo: " <> condense tipBlockNos) $
     counterexample ("mbSchedule: " <> condense mbSchedule) $

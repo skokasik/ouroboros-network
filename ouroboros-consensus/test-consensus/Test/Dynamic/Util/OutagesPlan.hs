@@ -31,6 +31,7 @@ import           Ouroboros.Consensus.BlockchainTime (NumSlots (..))
 import           Ouroboros.Consensus.Node.ProtocolInfo.Abstract
                      (NumCoreNodes (..))
 import           Ouroboros.Consensus.NodeId
+import           Ouroboros.Consensus.Util.Condense
 
 import           Test.Dynamic.Util.NodeJoinPlan
 import           Test.Dynamic.Util.NodeTopology
@@ -46,6 +47,10 @@ data OutageInterval = OutageInterval
   , outageLast  :: !SlotNo
   }
   deriving (Eq, Ord)
+
+instance Condense OutageInterval where
+  condense (OutageInterval s1 s2) =
+    condense ("s" <> condense (unSlotNo s1), "s" <> condense (unSlotNo s2))
 
 -- | Suppressing field names
 --
@@ -78,6 +83,15 @@ type OutageEdge = (CoreNodeId, CoreNodeId)
 --
 data OutagesPlan = OutagesPlan_Unsafe OutagesPlanIE OutagesPlanEI
   deriving (Eq, Show)
+
+instance Condense OutagesPlan where
+  condense plan@(OutagesPlan_Unsafe mIE _)
+    | plan == emptyOutagesPlan = "emptyOutagesPlan"
+    | otherwise                =
+      condense $ fmap f <$> Map.toList mIE
+    where
+      f edges    = g <$> Set.toList edges
+      g (n1, n2) = condense (fromCoreNodeId n1, fromCoreNodeId n2)
 
 -- | See 'OutagesPlan'.
 --
