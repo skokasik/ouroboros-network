@@ -11,6 +11,7 @@ module Test.Dynamic.Util.OutagesPlan (
   genOutagesPlan,
   insertOutage,
   nextSlotView,
+  plannedSlotOutageEdges,
   shrinkOutagesPlan,
   truncateOutagesPlan,
   ) where
@@ -122,6 +123,14 @@ insertOutage edge new (OutagesPlan_Unsafe mIE mEI) =
 
     updIE :: OutagesPlanIE -> OutageInterval -> OutagesPlanIE
     updIE acc del = mapSetDelete del edge acc
+
+-- | Which edges are planned to be out in the given slot
+--
+plannedSlotOutageEdges :: SlotNo -> OutagesPlan -> Set OutageEdge
+plannedSlotOutageEdges s (OutagesPlan_Unsafe mIE _) =
+    Set.unions $ Map.elems $ Map.filterWithKey predicate mIE
+  where
+    predicate (OutageInterval s1 s2) _ = s1 <= s && s <= s2
 
 -- | Pop an outage planned to start as soon as any other
 --

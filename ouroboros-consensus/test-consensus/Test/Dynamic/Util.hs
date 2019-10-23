@@ -60,7 +60,7 @@ import           Test.Dynamic.Util.NodeJoinPlan (NodeJoinPlan)
   Chain properties
 -------------------------------------------------------------------------------}
 
-shortestLength :: Map NodeId (Chain b) -> Natural
+shortestLength :: Map k (Chain b) -> Natural
 shortestLength = fromIntegral . minimum . map Chain.length . Map.elems
 
 prop_all_common_prefix :: (HasHeader b, Condense b, Eq b)
@@ -134,25 +134,24 @@ blockInfo nc b = BlockInfo
 data NodeLabel = NodeLabel
     { nlSlot      :: SlotNo
     , nlCreator   :: Maybe CoreNodeId
-    , nlBelievers :: Set NodeId
+    , nlBelievers :: Set CoreNodeId
     }
 
 instance Labellable NodeLabel where
     toLabelValue NodeLabel{..} = StrLabel $ Text.pack $
            show (unSlotNo nlSlot)
         <> " "
-        <> maybe "" (showNodeId . fromCoreNodeId) nlCreator
+        <> maybe "" showNodeId nlCreator
         <> showNodeIds nlBelievers
       where
-        fromNodeId :: NodeId -> Maybe Int
-        fromNodeId (CoreId nid) = Just nid
-        fromNodeId (RelayId _)  = Nothing
+        fromNodeId :: CoreNodeId -> Maybe Int
+        fromNodeId (CoreNodeId i) = Just i
 
-        showNodeId :: NodeId -> String
+        showNodeId :: CoreNodeId -> String
         showNodeId = maybe "" show . fromNodeId
 
-        showNodeIds :: Set NodeId -> String
-        showNodeIds nids = case catMaybes $ map fromNodeId $ Set.toList nids of
+        showNodeIds :: Set CoreNodeId -> String
+        showNodeIds cids = case catMaybes $ map fromNodeId $ Set.toList cids of
             [] -> ""
             xs -> " [" <> unwords (map show xs) <> "]"
 
@@ -162,7 +161,7 @@ instance Labellable EdgeLabel where
     toLabelValue = const $ StrLabel Text.empty
 
 tracesToDot :: forall b. (HasHeader b, HasCreator b)
-            => Map NodeId (NodeOutput b)
+            => Map CoreNodeId (NodeOutput b)
             -> String
 tracesToDot traces = Text.unpack $ printDotGraph $ graphToDot quickParams graph
   where
@@ -183,7 +182,7 @@ tracesToDot traces = Text.unpack $ printDotGraph $ graphToDot quickParams graph
     lastHash Genesis  = GenesisHash
     lastHash (_ :> b) = BlockHash $ blockHash b
 
-    blockInfosAndBelievers :: Map (ChainHash b) (BlockInfo b, Set NodeId)
+    blockInfosAndBelievers :: Map (ChainHash b) (BlockInfo b, Set CoreNodeId)
     blockInfosAndBelievers =
         Map.foldlWithKey f i (nodeOutputFinalChain <$> traces)
       where

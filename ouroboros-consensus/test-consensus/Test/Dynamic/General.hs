@@ -18,8 +18,11 @@ module Test.Dynamic.General (
   , TestOutput (..)
   ) where
 
+import           Control.Arrow ((&&&))
 import           Control.Monad (guard, join)
+import           Data.Map (Map)
 import qualified Data.Map as Map
+import           Data.Maybe (fromMaybe)
 import           Data.Set (Set)
 import qualified Data.Set as Set
 import           Data.Word (Word64)
@@ -31,6 +34,7 @@ import           Control.Monad.IOSim (runSimOrThrow)
 
 import           Ouroboros.Network.Block (BlockNo (..), pattern BlockPoint,
                      pattern GenesisPoint, HasHeader, Point, blockPoint)
+import           Ouroboros.Network.MockChain.Chain (headBlockNo, headPoint)
 
 import           Ouroboros.Consensus.BlockchainTime
 import           Ouroboros.Consensus.Node.ProtocolInfo
@@ -265,13 +269,17 @@ prop_general k TestConfig
   , nodeJoinPlan
   , nodeTopology
   , outagesPlan
+  , latencySeed
   } mbSchedule TestOutput
-  { testOutputNodes
+  { testOutputMPEEs
+  , testOutputNodes
   , testOutputOnsetTips
   } =
     counterexample ("nodeChains: " <> unlines ("" : map (\x -> "  " <> condense x) (Map.toList nodeChains))) $
     counterexample ("nodeJoinPlan: " <> condense nodeJoinPlan) $
     counterexample ("nodeTopology: " <> condense nodeTopology) $
+    counterexample ("outagesPlan: " <> show outagesPlan) $
+    counterexample ("latencySeed: " <> show latencySeed) $
     counterexample ("slot-node-tipBlockNo: " <> condense tipBlockNos) $
     counterexample ("mbSchedule: " <> condense mbSchedule) $
     counterexample ("growth schedule: " <> condense growthSchedule) $
@@ -282,6 +290,7 @@ prop_general k TestConfig
     tabulate "floor(4 * lastJoinSlot / numSlots)" [show lastJoinSlot] $
     tabulate "minimumDegreeNodeTopology" [show (minimumDegreeNodeTopology nodeTopology)] $
     tabulate "no outages" [show noOutages] $
+    prop_synced_edges .&&.
     (property (not noOutages) .||.
        prop_all_common_prefix
           maxForkLength
@@ -290,8 +299,8 @@ prop_general k TestConfig
        prop_no_unexpected_message_delays
     ) .&&.
     conjoin
-      [ fileHandleLeakCheck nid nodeDBs
-      | (nid, nodeDBs) <- Map.toList nodeOutputDBs ]
+      [ fileHandleLeakCheck cid nodeDBs
+      | (cid, nodeDBs) <- Map.toList nodeOutputDBs ]
   where
     schedule = case mbSchedule of
         Nothing    -> actualLeaderSchedule
@@ -321,17 +330,13 @@ prop_general k TestConfig
         ]
       where
         actuallyLead ::
-             NodeId
+             CoreNodeId
           -> Set (Point blk)
           -> SlotNo
           -> blk
           -> Maybe [CoreNodeId]
-        actuallyLead nid invalids s b = do
-            cid <- case nid of
-                CoreId i  -> Just (CoreNodeId i)
-                RelayId _ -> Nothing
-
-            let j = nodeIdJoinSlot nodeJoinPlan nid
+        actuallyLead cid invalids s b = do
+            let j = coreNodeIdJoinSlot nodeJoinPlan cid
             guard $ j <= s
 
             guard $ not $
@@ -369,15 +374,15 @@ prop_general k TestConfig
          noOutages
       && consensusExpected k nodeJoinPlan schedule
 
-    fileHandleLeakCheck :: NodeId -> NodeDBs MockFS -> Property
-    fileHandleLeakCheck nid nodeDBs = conjoin
+    fileHandleLeakCheck :: CoreNodeId -> NodeDBs MockFS -> Property
+    fileHandleLeakCheck cid nodeDBs = conjoin
         [ checkLeak "ImmutableDB" $ nodeDBsImm nodeDBs
         , checkLeak "VolatileDB"  $ nodeDBsVol nodeDBs
         , checkLeak "LedgerDB"    $ nodeDBsLgr nodeDBs
         ]
       where
         checkLeak dbName fs = counterexample
-          ("Node " <> show nid <> "'s " <> dbName <> " is leaking file handles")
+          ("Node " <> show cid <> "'s " <> dbName <> " is leaking file handles")
           (Mock.numOpenHandles fs === 0)
 
     -- in which quarter of the simulation does the last node join?
@@ -453,13 +458,14 @@ prop_general k TestConfig
             , let bnos' = filter (joinedBefore slot . fst) bnos
             ]
 
-        joinedBefore slot nid = nodeIdJoinSlot nodeJoinPlan nid < slot
+    joinedBefore slot nid = nodeIdJoinSlot nodeJoinPlan nid < slot
 
     -- swizzled 'testOutputOnsetTips'
     tipBlockNos :: [(SlotNo, [(NodeId, BlockNo)])]
     tipBlockNos =
         Map.toAscList $
-        fmap (Map.toAscList . fmap fst) $
+        fmap Map.toAscList $
+        fmap (Map.mapKeysMonotonic fromCoreNodeId . fmap fst) $
         testOutputOnsetTips
 
     -- In the paper <https://eprint.iacr.org/2017/573/20171115:00183>, a
@@ -498,8 +504,8 @@ prop_general k TestConfig
         [ case p of
               GenesisPoint            -> error "impossible"
               BlockPoint sendSlot hsh ->
-                  prop1 nid recvSlot sendSlot hsh bno
-        | (nid, m)          <- Map.toList adds
+                  prop1 cid recvSlot sendSlot hsh bno
+        | (cid, m)          <- Map.toList adds
         , (recvSlot, pbnos) <- Map.toList m
         , (p, bno)          <- Set.toList pbnos
         ]
@@ -507,13 +513,13 @@ prop_general k TestConfig
         -- INVARIANT: these AddBlock events are *not* for EBBs
         adds = nodeOutputAdds <$> testOutputNodes
 
-        prop1 nid recvSlot sendSlot hsh bno =
+        prop1 cid recvSlot sendSlot hsh bno =
             counterexample msg $
             delayOK || noDelay
           where
             msg =
                 "Unexpected message delay " <>
-                "(" <> "recipient: " <> condense nid <>
+                "(" <> "recipient: " <> condense (fromCoreNodeId cid) <>
                 "," <> "expected receive slot: "
                     <> condense firstPossibleReception <>
                 "," <> "actual receive slot: " <> condense recvSlot <>
@@ -523,7 +529,7 @@ prop_general k TestConfig
 
             -- a node cannot receive a block until both exist
             firstPossibleReception =
-                nodeIdJoinSlot nodeJoinPlan nid `max` sendSlot
+                coreNodeIdJoinSlot nodeJoinPlan cid `max` sendSlot
 
             noDelay = recvSlot == firstPossibleReception
 
@@ -551,3 +557,70 @@ prop_general k TestConfig
                 _            -> False
               where
                 LeaderSchedule sched = actualLeaderSchedule
+
+    -- If a directed edge runs to quiesence in a slot, the resulting chains
+    -- must satisfy an invariant:
+    --
+    --   * Either the block number of the server is less than or equal to the
+    --     client's and the immutable tip of the server is a prefix of the
+    --     client's
+    --
+    --   * or the immutable tip of the client is not a prefix of the
+    --     intersection of the two chains.
+    prop_synced_edges :: HasCallStack => Property
+    prop_synced_edges =
+        conjoin $ map slotProp (finals : Map.toList testOutputOnsetTips)
+      where
+        -- testOutputOnsetTips doesn't contain nodeOutputFinalChain
+        finals :: (SlotNo, Map CoreNodeId (BlockNo, Point blk))
+        finals =
+          ( SlotNo (fromIntegral t)
+          , (headBlockNo &&& headPoint) <$> nodeChains
+          )
+          where
+            NumSlots t = numSlots
+
+        -- we check a slot's chains at onset against the edges that were up in
+        -- the __previous__ slot
+        slotProp (SlotNo 0, _    ) = property True
+        slotProp (s,        mTips) = slotProp2 (pred s) mTips
+
+        slotProp2 s mFinalTips =
+          conjoin $ map (edgeProp s mFinalTips) (upEdges s)
+
+        upEdges :: SlotNo -> [OutageEdge]
+        upEdges s = Set.toList $
+            foldMap (bothDirections s) (edgesNodeTopology nodeTopology)
+          `Set.difference`
+            fromMaybe Set.empty (Map.lookup s testOutputMPEEs)
+          `Set.difference`
+            plannedSlotOutageEdges s outagesPlan
+
+        bothDirections :: SlotNo -> OutageEdge -> Set OutageEdge
+        bothDirections s (n1, n2)
+          | s < max (joinSlot n1) (joinSlot n2) = Set.empty
+          | otherwise                           =
+            Set.insert (n1, n2) $ Set.singleton (n2, n1)
+          where
+            joinSlot = coreNodeIdJoinSlot nodeJoinPlan
+
+        -- this @(client, server)@ order is determined by
+        -- 'Test.Dynamic.Network.directedEdge'
+        edgeProp s mFinalTips (client, server) =
+          let lu n = (,) n <$> Map.lookup n mFinalTips
+          in
+          case (,) <$> lu client <*> lu server of
+            Nothing -> error $ "could not find final tips: "
+              <> show (s, client, server)
+            Just x -> edgeProp2 s `uncurry` x
+
+        edgeProp2 ::
+              SlotNo
+           -> (CoreNodeId, (BlockNo, Point blk))
+              -- ^ client tip at the end of the slot
+           -> (CoreNodeId, (BlockNo, Point blk))
+              -- ^ server too
+           -> Property
+        edgeProp2 s client@(_, (b1, _)) server@(_, (b2, _)) =
+            counterexample ("unsynced edge: " <> show (s, client, server)) $
+            property $ b2 <= b1

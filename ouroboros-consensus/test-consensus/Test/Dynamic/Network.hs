@@ -726,8 +726,8 @@ data NodeOutput blk = NodeOutput
 
 data TestOutput blk = TestOutput
   { testOutputMPEEs     :: Map SlotNo (Set OutageEdge)
-  , testOutputNodes     :: Map NodeId (NodeOutput blk)
-  , testOutputOnsetTips :: Map SlotNo (Map NodeId (BlockNo, Point blk))
+  , testOutputNodes     :: Map CoreNodeId (NodeOutput blk)
+  , testOutputOnsetTips :: Map SlotNo (Map CoreNodeId (BlockNo, Point blk))
   }
 
 -- | Gather the test output from the nodes
@@ -743,7 +743,6 @@ getTestOutput ::
 getTestOutput nodes testOutputMPEEs = do
     (nodeOutputs', tipBlockNos') <- fmap unzip $ forM nodes $
       \(cid, cfg, node, readNodeInfo) -> do
-        let nid = fromCoreNodeId cid
         let chainDB = getChainDB node
         ch <- ChainDB.toChain chainDB
         ChainDB.closeDB chainDB
@@ -772,8 +771,8 @@ getTestOutput nodes testOutputMPEEs = do
               }
 
         pure
-          ( Map.singleton nid nodeOutput
-          , Map.singleton nid <$> Map.fromList nodeEventsOnsetTips
+          ( Map.singleton cid nodeOutput
+          , Map.singleton cid <$> Map.fromList nodeEventsOnsetTips
           )
 
     pure $ TestOutput
