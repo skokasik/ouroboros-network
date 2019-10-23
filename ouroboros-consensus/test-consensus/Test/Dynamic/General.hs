@@ -18,8 +18,8 @@ module Test.Dynamic.General (
   , TestOutput (..)
   ) where
 
-import           Control.Arrow ((&&&))
 import           Control.Monad (guard, join)
+import           Data.Function (on)
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.Maybe (fromMaybe)
@@ -33,8 +33,10 @@ import           Test.QuickCheck
 import           Control.Monad.IOSim (runSimOrThrow)
 
 import           Ouroboros.Network.Block (BlockNo (..), pattern BlockPoint,
-                     pattern GenesisPoint, HasHeader, Point, blockPoint)
-import           Ouroboros.Network.MockChain.Chain (headBlockNo, headPoint)
+                     ChainHash (..), pattern GenesisPoint, HasHeader,
+                     HeaderHash, Point, pointHash)
+import           Ouroboros.Network.MockChain.Chain (Chain)
+import qualified Ouroboros.Network.MockChain.Chain as Chain
 
 import           Ouroboros.Consensus.BlockchainTime
 import           Ouroboros.Consensus.Node.ProtocolInfo
@@ -255,6 +257,7 @@ runTestNetwork pInfo
 prop_general ::
   forall blk.
      ( Condense blk
+     , Condense (HeaderHash blk)
      , Eq blk
      , HasHeader blk
      , RunNode blk
@@ -340,7 +343,7 @@ prop_general k TestConfig
             guard $ j <= s
 
             guard $ not $
-                nodeIsEBB b || Set.member (blockPoint b) invalids
+                nodeIsEBB b || Set.member (Chain.blockPoint b) invalids
 
             pure [cid]
 
@@ -366,6 +369,7 @@ prop_general k TestConfig
 
     nodeChains    = nodeOutputFinalChain <$> testOutputNodes
     nodeOutputDBs = nodeOutputNodeDBs    <$> testOutputNodes
+    nodeForges    = nodeOutputForges     <$> testOutputNodes
 
     noOutages = outagesPlan == emptyOutagesPlan
 
@@ -417,10 +421,6 @@ prop_general k TestConfig
                 | ((s1, _, max1), (s2, min2, _)) <- orderedPairs extrema
                 ]
       where
-        -- QuickCheck's @==>@ 'discard's the test if @p1@ fails; that's not
-        -- what we want
-        implies p1 p2 = not p1 .||. p2
-
         -- all pairs @(x, y)@ where @x@ precedes @y@ in the given list
         orderedPairs :: [a] -> [(a, a)]
         orderedPairs = \case
@@ -562,31 +562,36 @@ prop_general k TestConfig
     -- must satisfy an invariant:
     --
     --   * Either the block number of the server is less than or equal to the
-    --     client's and the immutable tip of the server is a prefix of the
-    --     client's
+    --     client's and the immutable prefix of the server 'precede's that of
+    --     the client
     --
-    --   * or the immutable tip of the client is not a prefix of the
-    --     intersection of the two chains.
+    --   * or the 'immutablePrefix' of the client does not 'precede' the
+    --     server's chain.
+    --
     prop_synced_edges :: HasCallStack => Property
     prop_synced_edges =
-        conjoin $ map slotProp (finals : Map.toList testOutputOnsetTips)
+        conjoin $ map slotProp (finalTips : onsetTips)
       where
-        -- testOutputOnsetTips doesn't contain nodeOutputFinalChain
-        finals :: (SlotNo, Map CoreNodeId (BlockNo, Point blk))
-        finals =
+        -- tips at the onset of each slot
+        onsetTips :: [(SlotNo, Map CoreNodeId (Point blk))]
+        onsetTips = Map.toList (fmap snd <$> testOutputOnsetTips)
+
+        -- tips at the onset of the hypothetical slot after the run
+        finalTips :: (SlotNo, Map CoreNodeId (Point blk))
+        finalTips =
           ( SlotNo (fromIntegral t)
-          , (headBlockNo &&& headPoint) <$> nodeChains
+          , Chain.headPoint <$> nodeChains
           )
           where
             NumSlots t = numSlots
 
-        -- we check a slot's chains at onset against the edges that were up in
-        -- the __previous__ slot
+        -- we check a slot's chains at onset against the edges that were still
+        -- up when the __previous__ slot quiesced
         slotProp (SlotNo 0, _    ) = property True
         slotProp (s,        mTips) = slotProp2 (pred s) mTips
 
-        slotProp2 s mFinalTips =
-          conjoin $ map (edgeProp s mFinalTips) (upEdges s)
+        slotProp2 s mTips =
+          conjoin $ map (edgeProp s mTips) (upEdges s)
 
         upEdges :: SlotNo -> [OutageEdge]
         upEdges s = Set.toList $
@@ -604,23 +609,179 @@ prop_general k TestConfig
           where
             joinSlot = coreNodeIdJoinSlot nodeJoinPlan
 
-        -- this @(client, server)@ order is determined by
+        -- the @(client, server)@ ordering is determined by
         -- 'Test.Dynamic.Network.directedEdge'
-        edgeProp s mFinalTips (client, server) =
-          let lu n = (,) n <$> Map.lookup n mFinalTips
-          in
-          case (,) <$> lu client <*> lu server of
-            Nothing -> error $ "could not find final tips: "
-              <> show (s, client, server)
-            Just x -> edgeProp2 s `uncurry` x
+        edgeProp s mTips (client, server) =
+            case (,) <$> lu client <*> lu server of
+              Nothing -> error $ "could not find final tips: "
+                <> show (s, client, server)
+              Just x  -> edgeProp2 s `uncurry` x
+          where
+            lu n = (,) n <$> Map.lookup n mTips
 
+        -- the expected invariant
+        --
+        -- see the comments on the antecedents and conjunctions within this
+        -- definition
         edgeProp2 ::
               SlotNo
-           -> (CoreNodeId, (BlockNo, Point blk))
-              -- ^ client tip at the end of the slot
-           -> (CoreNodeId, (BlockNo, Point blk))
+           -> (CoreNodeId, Point blk)
+              -- ^ client tip after the slot quiesced
+           -> (CoreNodeId, Point blk)
               -- ^ server too
            -> Property
-        edgeProp2 s client@(_, (b1, _)) server@(_, (b2, _)) =
-            counterexample ("unsynced edge: " <> show (s, client, server)) $
-            property $ b2 <= b1
+        edgeProp2 s (n1, p1) (n2, p2) =
+            counterexample msg $
+            implies ante $
+            counterexample "conj1" conj1 .&&.
+            counterexample "conj2" conj2
+          where
+            c1 = lookupPoint p1
+            c2 = lookupPoint p2
+            imm1 = immutablePrefix k snd c1
+            imm2 = immutablePrefix k snd c2
+
+            getBNo :: Chain (HeaderHash blk, BlockNo) -> BlockNo
+            getBNo = chainBlockNo snd
+
+            notDeeper ::
+                 Chain (HeaderHash blk, BlockNo)
+              -> Chain (HeaderHash blk, BlockNo)
+              -> Bool
+            notDeeper = on (<=) getBNo
+
+            pre ::
+                 Chain (HeaderHash blk, BlockNo)
+              -> Chain (HeaderHash blk, BlockNo)
+              -> Bool
+            pre = precedes ((==) `on` fst) snd
+
+            -- if false, then -- at least by the end of the slot -- the
+            -- security parameter k would prevent the client from switching to
+            -- the server's chain
+            ante :: Bool
+            ante = imm1 `pre` c2
+
+            -- the client's chain must be at least as long as the server's
+            conj1 :: Bool
+            conj1 = c2 `notDeeper` c1
+
+            -- the client's immutable tip must be an extension of the server's
+            conj2 :: Bool
+            conj2 = imm2 `pre` imm1
+
+            msg :: String
+            msg =
+              unlines $
+              [ "An edge failed to fully sync!"
+              , "slot: " <> show s
+              , "client: " <> condense (fromCoreNodeId n1, p1, getBNo c1)
+              , "server: " <> condense (fromCoreNodeId n2, p2, getBNo c2)
+              , "ante: " <> show ante
+              , "conj1: " <> show conj1
+              , "conj2: " <> show conj2
+              ]
+
+        lookupPoint :: Point blk -> Chain (HeaderHash blk, BlockNo)
+        lookupPoint = lookupChainHash . pointHash
+
+        -- use all nodes' 'nodeOutputForges's to map a hash to its full chain
+        lookupChainHash :: ChainHash blk -> Chain (HeaderHash blk, BlockNo)
+        lookupChainHash = \case
+            GenesisHash -> Chain.Genesis
+            BlockHash h ->
+              case Map.lookup h memoTable of
+                Nothing -> error $ "unknown block hash: " <> show h
+                Just c  -> c
+          where
+            memoTable = foldl snoc Map.empty (foldMap Map.elems nodeForges)
+            snoc acc blk = Map.insert h (prev Chain.:> (h, bno)) acc
+              where
+                h    = Chain.blockHash blk
+                bno  = Chain.blockNo blk
+                prev = lookupChainHash (Chain.blockPrevHash blk)
+
+{-------------------------------------------------------------------------------
+  Property utilies
+-------------------------------------------------------------------------------}
+
+-- | Require a 'Property' conditionally
+--
+-- QuickCheck's @==>@ is similar, but goes further by 'discard'ing the test if
+-- the antecedent is false.
+--
+implies :: Bool -> Property -> Property
+implies p1 p2 = not p1 .||. p2
+
+-- | Test whether P is either a prefix of or else equal to Q
+--
+precedes ::
+     (a -> a -> Bool)
+     -- ^ equal
+  -> (a -> BlockNo)
+  -> Chain a
+  -> Chain a
+  -> Bool
+precedes eq f c1 c2 =
+    case skipEBBs f c1 of
+      Chain.Genesis -> True
+      _ Chain.:> a1 -> go a1 (skipEBBs f c2)
+  where
+    go a1 = \case
+      Chain.Genesis     -> False
+      prev2 Chain.:> a2 ->
+        case (compare `on` f) a1 a2 of
+          LT -> go a1 prev2
+          EQ -> if eq a1 a2 then True else go a1 prev2
+          GT -> False
+
+-- | Filter out blocks with the same block number as their predecessor
+--
+-- Notably, the result has no EBBs.
+--
+skipEBBs :: (a -> BlockNo) -> Chain a -> Chain a
+skipEBBs f = \case
+    Chain.Genesis -> Chain.Genesis
+    c Chain.:> a  ->
+      (if f a == chainBlockNo f c then id else (Chain.:> a)) $
+      skipEBBs f c
+
+chainBlockNo :: (a -> BlockNo) -> Chain a -> BlockNo
+chainBlockNo f = \case
+  Chain.Genesis -> 0
+  _ Chain.:> a  -> f a
+
+-- | The shortest prefix of C whose block number plus the security parameter k
+-- equals C's block number
+--
+-- Notably, the prefix never ends in an EBB.
+--
+immutablePrefix :: SecurityParam -> (a -> BlockNo) -> Chain a -> Chain a
+immutablePrefix k f = \c -> go (maxRollbacks k) (chainBlockNo f c) c
+  where
+    go toRollback bno c = case c of
+      Chain.Genesis        -> Chain.Genesis
+      c' Chain.:> b
+        | bno == f b      -> go toRollback (f b) c'
+        | 0 == toRollback -> c
+        | otherwise       -> go (toRollback - 1) (f b) c'
+
+
+{-
+commonPrefix ::
+     (a -> a -> Bool)
+     -- ^ equal
+  -> (a -> BlockNo)
+  -> Chain a
+  -> Chain a
+  -> Chain a
+commonPrefix eq f = go
+  where
+    go Chain.Genesis       _                   = Chain.Genesis
+    go _                   Chain.Genesis       = Chain.Genesis
+    go c1@(p1 Chain.:> a1) c2@(p2 Chain.:> a2) =
+      case (compare `on` f) a1 a2 of
+        LT -> go c1 p2
+        EQ -> if eq a1 a2 then c1 else go p1 p2
+        GT -> go p1 c2
+-}
