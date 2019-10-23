@@ -25,6 +25,7 @@ import           Test.Dynamic.General
 import           Test.Dynamic.Util
 import           Test.Dynamic.Util.NodeJoinPlan
 import           Test.Dynamic.Util.NodeTopology
+import           Test.Dynamic.Util.OutagesPlan
 
 import           Test.Util.Orphans.Arbitrary ()
 
@@ -51,6 +52,10 @@ tests = testGroup "Dynamic chain generation"
             (genNodeTopology numCoreNodes)
             shrinkNodeTopology $
         \nodeTopology ->
+        forAllShrink
+            (genOutagesPlan numSlots nodeJoinPlan nodeTopology)
+            shrinkOutagesPlan $
+        \outagesPlan ->
         forAllShrink genLatencySeed shrinkLatencySeed $
         \latencySeed ->
         forAllShrink
@@ -64,6 +69,7 @@ tests = testGroup "Dynamic chain generation"
                   , numSlots
                   , nodeJoinPlan
                   , nodeTopology
+                  , outagesPlan
                   , latencySeed
                   }
                 schedule seed

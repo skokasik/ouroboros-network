@@ -68,6 +68,7 @@ data TestConfig = TestConfig
   , numSlots     :: !NumSlots
   , nodeJoinPlan :: !NodeJoinPlan
   , nodeTopology :: !NodeTopology
+  , outagesPlan  :: !OutagesPlan
   , latencySeed  :: !(LatencyInjection SM.SMGen)
   }
   deriving (Show)
@@ -91,9 +92,16 @@ genTestConfig :: NumCoreNodes -> NumSlots -> Gen TestConfig
 genTestConfig numCoreNodes numSlots = do
     nodeJoinPlan <- genNodeJoinPlan numCoreNodes numSlots
     nodeTopology <- genNodeTopology numCoreNodes
+    outagesPlan <- genOutagesPlan numSlots nodeJoinPlan nodeTopology
     latencySeed <- genLatencySeed
     pure TestConfig
-      { numCoreNodes, numSlots, nodeJoinPlan, nodeTopology, latencySeed }
+      { numCoreNodes
+      , numSlots
+      , nodeJoinPlan
+      , nodeTopology
+      , outagesPlan
+      , latencySeed
+      }
 
 -- | Shrink and also include the original value
 --
@@ -123,23 +131,32 @@ shrinkTestConfig
 
 -- | Shrink, including the number of nodes and slots
 shrinkTestConfigFreely :: TestConfig -> [TestConfig]
-shrinkTestConfigFreely
-  TestConfig{numCoreNodes, numSlots, nodeJoinPlan, nodeTopology, latencySeed} =
+shrinkTestConfigFreely TestConfig
+  { numCoreNodes
+  , numSlots
+  , nodeJoinPlan
+  , nodeTopology
+  , outagesPlan
+  , latencySeed
+  } =
     unShrinkIdem $
     [ TestConfig
         { numCoreNodes = n'
         , numSlots = t'
         , nodeJoinPlan = p'
         , nodeTopology = top'
+        , outagesPlan = op'
         , latencySeed = seed'
         }
     | n'    <- shrinkIdem shrink numCoreNodes
     , t'    <- shrinkIdem shrink numSlots
     , let adjustedP   = adjustedNodeJoinPlan n' t'
     , let adjustedTop = adjustedNodeTopology n'
+    , let adjustedOp  = truncateOutagesPlan n' t' outagesPlan
     , p'    <- shrinkIdem shrinkNodeJoinPlan adjustedP
     , top'  <- shrinkIdem shrinkNodeTopology adjustedTop
     , seed' <- shrinkIdem shrinkLatencySeed latencySeed
+    , op'   <- shrinkIdem shrinkOutagesPlan adjustedOp
     ]
   where
     adjustedNodeJoinPlan (NumCoreNodes n') (NumSlots t') =
@@ -182,7 +199,14 @@ runTestNetwork ::
   -> Seed
   -> TestOutput blk
 runTestNetwork pInfo
-  TestConfig{numCoreNodes, numSlots, nodeJoinPlan, nodeTopology, latencySeed}
+  TestConfig
+    { numCoreNodes
+    , numSlots
+    , nodeJoinPlan
+    , nodeTopology
+    , outagesPlan
+    , latencySeed
+    }
   seed = runSimOrThrow $ do
     registry  <- unsafeNewRegistry
 
@@ -205,7 +229,7 @@ runTestNetwork pInfo
       , nnaQuiescenceThreshold = 50000   -- io-sim "seconds"
       , nnaNodeTopology        = nodeTopology
       , nnaNumCoreNodes        = numCoreNodes
-      , nnaOutagesPlan         = emptyOutagesPlan
+      , nnaOutagesPlan         = outagesPlan
       , nnaProtocol            = pInfo
       , nnaRegistry            = registry
       , nnaTestBtime           = testBtime
@@ -236,8 +260,15 @@ prop_general ::
   -> Maybe LeaderSchedule
   -> TestOutput blk
   -> Property
-prop_general k TestConfig{numSlots, nodeJoinPlan, nodeTopology} mbSchedule
-  TestOutput{testOutputNodes, testOutputTipBlockNos} =
+prop_general k TestConfig
+  { numSlots
+  , nodeJoinPlan
+  , nodeTopology
+  , outagesPlan
+  } mbSchedule TestOutput
+  { testOutputNodes
+  , testOutputTipBlockNos
+  } =
     counterexample ("nodeChains: " <> unlines ("" : map (\x -> "  " <> condense x) (Map.toList nodeChains))) $
     counterexample ("nodeJoinPlan: " <> condense nodeJoinPlan) $
     counterexample ("nodeTopology: " <> condense nodeTopology) $
@@ -250,11 +281,14 @@ prop_general k TestConfig{numSlots, nodeJoinPlan, nodeTopology} mbSchedule
     tabulate "shortestLength" [show (rangeK k (shortestLength nodeChains))] $
     tabulate "floor(4 * lastJoinSlot / numSlots)" [show lastJoinSlot] $
     tabulate "minimumDegreeNodeTopology" [show (minimumDegreeNodeTopology nodeTopology)] $
-    prop_all_common_prefix
-        maxForkLength
-        (Map.elems nodeChains) .&&.
-    prop_all_growth .&&.
-    prop_no_unexpected_message_delays .&&.
+    tabulate "no outages" [show noOutages] $
+    (property (not noOutages) .||.
+       prop_all_common_prefix
+          maxForkLength
+          (Map.elems nodeChains) .&&.
+       prop_all_growth .&&.
+       prop_no_unexpected_message_delays
+    ) .&&.
     conjoin
       [ fileHandleLeakCheck nid nodeDBs
       | (nid, nodeDBs) <- Map.toList nodeOutputDBs ]
@@ -328,8 +362,12 @@ prop_general k TestConfig{numSlots, nodeJoinPlan, nodeTopology} mbSchedule
     nodeChains    = nodeOutputFinalChain <$> testOutputNodes
     nodeOutputDBs = nodeOutputNodeDBs    <$> testOutputNodes
 
+    noOutages = outagesPlan == emptyOutagesPlan
+
     isConsensusExpected :: Bool
-    isConsensusExpected = consensusExpected k nodeJoinPlan schedule
+    isConsensusExpected =
+         noOutages
+      && consensusExpected k nodeJoinPlan schedule
 
     fileHandleLeakCheck :: NodeId -> NodeDBs MockFS -> Property
     fileHandleLeakCheck nid nodeDBs = conjoin

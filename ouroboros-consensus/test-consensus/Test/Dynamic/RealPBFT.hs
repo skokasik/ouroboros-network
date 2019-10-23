@@ -43,6 +43,7 @@ import           Test.Dynamic.Network (NodeOutput (..))
 import           Test.Dynamic.Util
 import           Test.Dynamic.Util.NodeJoinPlan
 import           Test.Dynamic.Util.NodeTopology
+import           Test.Dynamic.Util.OutagesPlan
 
 import           Test.Util.Orphans.Arbitrary ()
 
@@ -71,6 +72,7 @@ tests = testGroup "Dynamic chain generation"
               , (CoreNodeId 2,SlotNo 22)
               ]
             , nodeTopology = meshNodeTopology ncn
+            , outagesPlan  = emptyOutagesPlan
             , latencySeed  = noLatencySeed
             }
     , testProperty "simple Real PBFT convergence" $

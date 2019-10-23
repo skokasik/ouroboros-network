@@ -8,19 +8,31 @@ module Test.Dynamic.Util.OutagesPlan (
   OutagesPlanEI,
   OutagesPlanIE,
   emptyOutagesPlan,
+  genOutagesPlan,
   insertOutage,
   nextSlotView,
+  shrinkOutagesPlan,
+  truncateOutagesPlan,
   ) where
 
 import           Data.Map (Map)
 import qualified Data.Map as Map
-import           Data.Maybe (fromMaybe)
+import           Data.Maybe (fromMaybe, mapMaybe, maybeToList)
+import qualified Data.Monoid as Monoid
 import           Data.Set (Set)
 import qualified Data.Set as Set
 
+import           Test.QuickCheck
+
 import           Ouroboros.Network.Block
 
+import           Ouroboros.Consensus.BlockchainTime (NumSlots (..))
+import           Ouroboros.Consensus.Node.ProtocolInfo.Abstract
+                     (NumCoreNodes (..))
 import           Ouroboros.Consensus.NodeId
+
+import           Test.Dynamic.Util.NodeJoinPlan
+import           Test.Dynamic.Util.NodeTopology
 
 -- | The slot interval of a planned outage
 --
@@ -153,13 +165,83 @@ nextSlotView = fmap go0 . nextView
       -> OutagesPlan
       -> (SlotNo, Map OutageEdge SlotNo, OutagesPlan)
     go s1 !s2s plan = case nextView plan of
-        Just ((o, e), plan')
-          | outageFirst o == s1 -> go s1 (Map.insert e (outageLast o) s2s) plan'
+        Just ((i, e), plan')
+          | outageFirst i == s1 -> go s1 (Map.insert e (outageLast i) s2s) plan'
         _ -> (s1, s2s, plan)
+
+-- | Removes outages with bad edges
+--
+truncateOutagesPlan :: NumCoreNodes -> NumSlots -> OutagesPlan -> OutagesPlan
+truncateOutagesPlan (NumCoreNodes n) (NumSlots t) (OutagesPlan_Unsafe mIE mEI) =
+    OutagesPlan_Unsafe mIE' mEI'
+  where
+    mEI' = Map.mapMaybeWithKey predicate mEI
+    mIE' =
+      Map.fromList $
+      [ (i', es')
+      | (i, es) <- Map.toList mIE
+      , i'  <- maybeToList $ fi i
+      , es' <- maybeToList $ nonEmptySet $ Set.filter fe es
+      ]
+
+    fi (OutageInterval s1 s2)
+      | 0 == t        = Nothing
+      | s1 > lastSlot = Nothing
+      | otherwise     = Just $ OutageInterval s1 (min s2 lastSlot)
+      where
+        lastSlot = SlotNo (fromIntegral (t - 1))
+
+    fe (n1, n2) = n > 0 && n1 <= lastNode && n2 <= lastNode
+      where
+        lastNode = CoreNodeId (n - 1)
+
+    predicate k is
+      | fe k      = nonEmptySet $ Set.fromList $ mapMaybe fi $ Set.toList is
+      | otherwise = Nothing
+
+genOutagesPlan :: NumSlots -> NodeJoinPlan -> NodeTopology -> Gen OutagesPlan
+genOutagesPlan (NumSlots t) nodeJoinPlan (NodeTopology top)
+  | t == 0    = pure emptyOutagesPlan
+  | otherwise = choose (0, numEdges * t) >>= go emptyOutagesPlan
+  where
+    numEdges = 2 * Monoid.getSum (foldMap (Monoid.Sum . Set.size) top)
+
+    go !acc 0 = pure acc
+    go acc k = do
+      e <- genEdge
+      i <- genInterval e
+      go (insertOutage e i acc) (k - 1)
+
+    -- an edge in the topology
+    genEdge :: Gen OutageEdge
+    genEdge = do
+      (n1, n2s) <- elements $ filter (not . Set.null . snd) $ Map.toList top
+      n2        <- elements (Set.toList n2s)
+
+      b <- arbitrary
+      pure $ if b then (n1, n2) else (n2, n1)
+
+    -- an interval between the later node join slot and last slot
+    genInterval :: OutageEdge -> Gen OutageInterval
+    genInterval (n1, n2) = do
+      let lastSlot = fromIntegral (t - 1)
+          joinSlot = coreNodeIdJoinSlot nodeJoinPlan
+      s1 <- choose (unSlotNo (joinSlot n1 `max` joinSlot n2), lastSlot)
+      s2 <- choose (s1, lastSlot)
+      pure $ OutageInterval (SlotNo s1) (SlotNo s2)
+
+-- TODO intermediate shrinks
+shrinkOutagesPlan :: OutagesPlan -> [OutagesPlan]
+shrinkOutagesPlan plan
+  | emptyOutagesPlan == plan = []
+  | otherwise                = [emptyOutagesPlan]
 
 {-------------------------------------------------------------------------------
   Set-valued maps
 -------------------------------------------------------------------------------}
+
+nonEmptySet :: Set a -> Maybe (Set a)
+nonEmptySet vs = if Set.null vs then Nothing else Just vs
 
 -- | Deleting the element in a singleton set drops the mapping
 --
@@ -169,8 +251,6 @@ mapSetDelete k v m = Map.alter f k m
     f = \case
         Nothing -> Nothing
         Just vs -> nonEmptySet $ Set.delete v vs
-
-    nonEmptySet vs = if Set.null vs then Nothing else Just vs
 
 mapSetInsert :: (Ord k, Ord v) => k -> v -> Map k (Set v) -> Map k (Set v)
 mapSetInsert k v m = Map.alter (Just . f) k m

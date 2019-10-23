@@ -25,6 +25,7 @@ import           Test.Dynamic.Network
 import           Test.Dynamic.Util
 import           Test.Dynamic.Util.NodeJoinPlan
 import           Test.Dynamic.Util.NodeTopology
+import           Test.Dynamic.Util.OutagesPlan
 
 import           Test.Util.Orphans.Arbitrary ()
 
@@ -50,6 +51,7 @@ tests = testGroup "Dynamic chain generation"
               , numSlots
               , nodeJoinPlan = NodeJoinPlan (Map.fromList [(CoreNodeId 0,SlotNo {unSlotNo = 24}),(CoreNodeId 1,SlotNo {unSlotNo = 29}),(CoreNodeId 2,SlotNo {unSlotNo = 29})])
               , nodeTopology = NodeTopology (Map.fromList [(CoreNodeId 0,Set.fromList []),(CoreNodeId 1,Set.fromList [CoreNodeId 0]),(CoreNodeId 2,Set.fromList [CoreNodeId 1])])
+              , outagesPlan = emptyOutagesPlan
               , latencySeed = InjectLatencies (seedSMGen 9511500888644978603 10563634114029886209)
                 -- ^ That seed caused a failure during work on PR 1131, which
                 -- lead to Issue 1147. Seeds are unfortunately fragile, so if
@@ -67,6 +69,10 @@ tests = testGroup "Dynamic chain generation"
             (genNodeTopology numCoreNodes)
             shrinkNodeTopology $
         \nodeTopology ->
+        forAllShrink
+            (genOutagesPlan numSlots nodeJoinPlan nodeTopology)
+            shrinkOutagesPlan $
+        \outagesPlan ->
         forAllShrink genLatencySeed shrinkLatencySeed $
         \latencySeed ->
             testPraos' TestConfig
@@ -74,6 +80,7 @@ tests = testGroup "Dynamic chain generation"
               , numSlots
               , nodeJoinPlan
               , nodeTopology
+              , outagesPlan
               , latencySeed
               }
                 seed
@@ -85,6 +92,7 @@ tests = testGroup "Dynamic chain generation"
       , numSlots
       , nodeJoinPlan = trivialNodeJoinPlan numCoreNodes
       , nodeTopology = meshNodeTopology numCoreNodes
+      , outagesPlan  = emptyOutagesPlan
       , latencySeed  = noLatencySeed
       }
 
