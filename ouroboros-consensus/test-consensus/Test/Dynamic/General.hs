@@ -267,7 +267,7 @@ prop_general k TestConfig
   , outagesPlan
   } mbSchedule TestOutput
   { testOutputNodes
-  , testOutputTipBlockNos
+  , testOutputOnsetTips
   } =
     counterexample ("nodeChains: " <> unlines ("" : map (\x -> "  " <> condense x) (Map.toList nodeChains))) $
     counterexample ("nodeJoinPlan: " <> condense nodeJoinPlan) $
@@ -455,12 +455,12 @@ prop_general k TestConfig
 
         joinedBefore slot nid = nodeIdJoinSlot nodeJoinPlan nid < slot
 
-    -- swizzled 'testOutputTipBlockNos'
+    -- swizzled 'testOutputOnsetTips'
     tipBlockNos :: [(SlotNo, [(NodeId, BlockNo)])]
     tipBlockNos =
         Map.toAscList $
-        fmap Map.toAscList $
-        testOutputTipBlockNos
+        fmap (Map.toAscList . fmap fst) $
+        testOutputOnsetTips
 
     -- In the paper <https://eprint.iacr.org/2017/573/20171115:00183>, a
     -- /message/ carries a chain from one party to another. When a party forges

@@ -444,8 +444,10 @@ runNodeNetwork NodeNetworkArgs
         -- slot. With such a short transaction (read one TVar) this is likely
         -- but not necessarily certain.
         onSlotChange btime $ \s -> do
-          bno <- atomically $ ChainDB.getTipBlockNo chainDB
-          traceWith (nodeEventsTipBlockNos nodeInfoEvents) (s, bno)
+          x <- atomically $ (,)
+            <$> ChainDB.getTipBlockNo chainDB
+            <*> ChainDB.getTipPoint chainDB
+          traceWith (nodeEventsOnsetTips nodeInfoEvents) (s, x)
 
       void $ forkLinkedThread registry $ txProducer
         pInfoConfig
@@ -639,14 +641,15 @@ data NodeInfo blk db ev = NodeInfo
 -- The @ev@ type parameter is instantiated by this module at types for
 -- 'Tracer's and lists: actions for accumulating and lists as accumulations.
 data NodeEvents blk ev = NodeEvents
-  { nodeEventsAdds        :: ev (SlotNo, Point blk, BlockNo)
+  { nodeEventsAdds      :: ev (SlotNo, Point blk, BlockNo)
     -- ^ every 'AddedBlockToVolDB' excluding EBBs
-  , nodeEventsForges      :: ev (TraceForgeEvent blk)
+  , nodeEventsForges    :: ev (TraceForgeEvent blk)
     -- ^ every 'TraceForgeEvent'
-  , nodeEventsInvalids    :: ev (Point blk)
+  , nodeEventsInvalids  :: ev (Point blk)
     -- ^ the point of every 'ChainDB.InvalidBlock' event
-  , nodeEventsTipBlockNos :: ev (SlotNo, BlockNo)
-    -- ^ 'ChainDB.getTipBlockNo' for each node at the onset of each slot
+  , nodeEventsOnsetTips :: ev (SlotNo, (BlockNo, Point blk))
+    -- ^ data from 'ChainDB.getTipBlock' for each node at the onset of each
+    -- slot
   }
 
 -- | A vector with an element for each database of a node
@@ -708,9 +711,9 @@ data NodeOutput blk = NodeOutput
   }
 
 data TestOutput blk = TestOutput
-    { testOutputNodes       :: Map NodeId (NodeOutput blk)
-    , testOutputTipBlockNos :: Map SlotNo (Map NodeId BlockNo)
-    }
+  { testOutputNodes     :: Map NodeId (NodeOutput blk)
+  , testOutputOnsetTips :: Map SlotNo (Map NodeId (BlockNo, Point blk))
+  }
 
 -- | Gather the test output from the nodes
 getTestOutput ::
@@ -737,7 +740,7 @@ getTestOutput nodes = do
               { nodeEventsAdds
               , nodeEventsForges
               , nodeEventsInvalids
-              , nodeEventsTipBlockNos
+              , nodeEventsOnsetTips
               } = nodeInfoEvents
         let nodeOutput = NodeOutput
               { nodeOutputAdds       =
@@ -754,12 +757,12 @@ getTestOutput nodes = do
 
         pure
           ( Map.singleton nid nodeOutput
-          , Map.singleton nid <$> Map.fromList nodeEventsTipBlockNos
+          , Map.singleton nid <$> Map.fromList nodeEventsOnsetTips
           )
 
     pure $ TestOutput
-        { testOutputNodes       = Map.unions nodeOutputs'
-        , testOutputTipBlockNos = Map.unionsWith Map.union tipBlockNos'
+        { testOutputNodes     = Map.unions nodeOutputs'
+        , testOutputOnsetTips = Map.unionsWith Map.union tipBlockNos'
         }
 
 {-------------------------------------------------------------------------------
