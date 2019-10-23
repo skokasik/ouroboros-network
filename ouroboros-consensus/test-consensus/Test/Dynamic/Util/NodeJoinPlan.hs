@@ -33,8 +33,15 @@ newtype NodeJoinPlan = NodeJoinPlan (Map CoreNodeId SlotNo)
   deriving (Show)
 
 instance Condense NodeJoinPlan where
-  condense (NodeJoinPlan m) = condense
-      [ (fromCoreNodeId nid, slot) | (nid, slot) <- Map.toAscList m ]
+  condense (NodeJoinPlan m)
+    | all (0 ==) m = "trivialNodeJoinPlan " <> sz
+    | otherwise    =
+      condense $
+      [ (fromCoreNodeId nid, "s" <> show (unSlotNo slot))
+      | (nid, slot) <- Map.toAscList m
+      ]
+    where
+      sz = "(NumCoreNodes " ++ show (Map.size m) ++ ")"
 
 -- | All nodes join immediately
 --
