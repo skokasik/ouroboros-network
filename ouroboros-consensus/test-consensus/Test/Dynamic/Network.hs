@@ -23,7 +23,6 @@ module Test.Dynamic.Network (
   , MiniProtocolExpectedException (..)
   , MiniProtocolFatalException (..)
   , MiniProtocolState (..)
-  , TraceMiniProtocolRestart (..)
     -- * Test Output
   , TestOutput (..)
   , NodeOutput (..)
@@ -175,12 +174,24 @@ runNodeNetwork NodeNetworkArgs
     nodeVars <- fmap Map.fromList $ do
       forM coreNodeIds $ \nid -> (,) nid <$> Strict.newTVarM Nothing
 
+    -- allocate a variable to record 'MiniProtocolExpectedException's
+    accMPEEsVar <- Strict.newTVarM Map.empty
+    let edgeTracer = nullDebugTracer <> Tracer go
+          where
+            go = \case
+              (eg, s, st@MiniProtocolDelayed, mbE) -> forM_ mbE $ \case
+                MPEEPlannedOutage _ mbE' -> go (eg, s, st, mbE')
+                _                        -> atomically $ do
+                  let upd = Map.insertWith Set.union s (Set.singleton eg)
+                  modifyTVar accMPEEsVar upd
+              _ -> pure ()
+
     -- spawn threads for each undirected edge
     mbSMG <- mapM uncheckedNewTVarM mbInitSMG
     let edges = edgesNodeTopology nodeTopology
     forM_ edges $ \edge -> do
       void $ forkLinkedThread registry $ do
-        undirectedEdge nullDebugTracer mbSMG livePipesVar downRequestVars nodeVars edge
+        undirectedEdge edgeTracer mbSMG livePipesVar downRequestVars nodeVars edge
 
     -- create nodes
     let nodesByJoinSlot =
@@ -212,7 +223,8 @@ runNodeNetwork NodeNetworkArgs
     -- still running at that point, they will throw a 'CloseDBError'.
     closeRegistry registry
 
-    getTestOutput nodes
+    accMPEEs <- atomically $ readTVar accMPEEsVar
+    getTestOutput nodes accMPEEs
   where
     btime = testBlockchainTime testBtime
 
@@ -224,7 +236,7 @@ runNodeNetwork NodeNetworkArgs
 
     undirectedEdge ::
          HasCallStack
-      => Tracer m (SlotNo, MiniProtocolState, Maybe (MiniProtocolExpectedException blk))
+      => Tracer m (OutageEdge, SlotNo, MiniProtocolState, Maybe (MiniProtocolExpectedException blk))
       -> LatencyInjection (StrictTVar m SMGen)
       -> LivePipesVar m
       -> Map OutageEdge (DownRequestVar m)
@@ -275,11 +287,13 @@ runNodeNetwork NodeNetworkArgs
         (s12, s21, endpoint1, endpoint2) <- activeWaiting (SlotNo 0) (SlotNo 0)
 
         -- spawn threads for both directed edges
-        let de drv s ep1 ep2 =
+        let de drv downUntil ep1@(n1, _) ep2@(n2, _) =
                 directedEdge
-                  nnaMaxLatencies tr btime mbSMG
-                  livePipesVar drv s
+                  nnaMaxLatencies tr' btime mbSMG
+                  livePipesVar drv downUntil
                   ep1 ep2
+              where
+                tr' = contramap (\(s, st, mbE) -> ((n1, n2), s, st, mbE)) tr
         void $ withAsyncsWaitAny2
             (de drv12 s12 endpoint1 endpoint2)
             (de drv21 s21 endpoint2 endpoint1)
@@ -711,7 +725,8 @@ data NodeOutput blk = NodeOutput
   }
 
 data TestOutput blk = TestOutput
-  { testOutputNodes     :: Map NodeId (NodeOutput blk)
+  { testOutputMPEEs     :: Map SlotNo (Set OutageEdge)
+  , testOutputNodes     :: Map NodeId (NodeOutput blk)
   , testOutputOnsetTips :: Map SlotNo (Map NodeId (BlockNo, Point blk))
   }
 
@@ -723,8 +738,9 @@ getTestOutput ::
         , NodeKernel m NodeId blk
         , m (NodeInfo blk MockFS [])
         )]
+    -> Map SlotNo (Set OutageEdge)
     -> m (TestOutput blk)
-getTestOutput nodes = do
+getTestOutput nodes testOutputMPEEs = do
     (nodeOutputs', tipBlockNos') <- fmap unzip $ forM nodes $
       \(cid, cfg, node, readNodeInfo) -> do
         let nid = fromCoreNodeId cid
@@ -761,7 +777,8 @@ getTestOutput nodes = do
           )
 
     pure $ TestOutput
-        { testOutputNodes     = Map.unions nodeOutputs'
+        { testOutputMPEEs
+        , testOutputNodes     = Map.unions nodeOutputs'
         , testOutputOnsetTips = Map.unionsWith Map.union tipBlockNos'
         }
 
@@ -876,15 +893,6 @@ data MiniProtocolExpectedException blk
 instance (SupportedBlock blk) => Exception (MiniProtocolExpectedException blk)
 
 data MiniProtocolState = MiniProtocolDelayed | MiniProtocolRestarting
-  deriving (Show)
-
-data TraceMiniProtocolRestart peer blk
-  = TraceMiniProtocolRestart
-      peer peer
-      SlotNo
-      MiniProtocolState
-      (Maybe (MiniProtocolExpectedException blk))
-    -- ^ us them when-start-blocking state reason
   deriving (Show)
 
 -- | Any synchronous exception from a 'directedEdge' that was not handled as a
