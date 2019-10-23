@@ -117,13 +117,13 @@ nextView :: OutagesPlan -> Maybe ((OutageInterval, OutageEdge), OutagesPlan)
 nextView (OutagesPlan_Unsafe mIE mEI) =
     case Map.minViewWithKey mIE of
         Nothing              -> Nothing
-        Just ((o, es), mIE') -> case Set.minView es of
+        Just ((i, es), mIE') -> case Set.minView es of
             Nothing       -> Nothing   -- an ignorable invariant violation
             Just (e, es') -> Just
-                ( (o, e)
+                ( (i, e)
                 , OutagesPlan_Unsafe
-                      (Map.insert o es' mIE')
-                      (mapSetDelete e o mEI)
+                      (Map.insert i es' mIE')
+                      (mapSetDelete e i mEI)
                 )
 
 -- | Pop all outages planned to start next
