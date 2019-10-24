@@ -538,12 +538,16 @@ chainSyncClient mkPipelineDecision0 getTipBlockNo tracer cfg btime
                   , theirFrag
                   , ourTip
                   } -> traceException $ do
+      traceWith tracer $ TraceDownloadedHeader2 "START" hdr
+
       -- Reject the block if invalid
       let hdrHash  = headerHash hdr
           hdrPoint = headerPoint hdr
       isInvalidBlock <- atomically $ forgetFingerprint <$> getIsInvalidBlock
       when (isInvalidBlock hdrHash) $
         disconnect $ InvalidBlock hdrPoint
+
+      traceWith tracer $ TraceDownloadedHeader2 "getLedgerView" hdr
 
       -- Get the ledger view required to validate the header
       -- NOTE: This will block if we are too far behind.
@@ -570,6 +574,8 @@ chainSyncClient mkPipelineDecision0 getTipBlockNo tracer cfg btime
           , _theirTip         = theirTip
           }
 
+      traceWith tracer $ TraceDownloadedHeader2 "applyChainState" hdr
+
       theirChainState' <-
         case runExcept $ applyChainState cfg ledgerView hdr theirChainState of
           Right theirChainState' -> return theirChainState'
@@ -580,12 +586,16 @@ chainSyncClient mkPipelineDecision0 getTipBlockNo tracer cfg btime
             , _theirTip           = theirTip
             }
 
+      traceWith tracer $ TraceDownloadedHeader2 "write varCandidate" hdr
+
       let theirFrag' = theirFrag :> hdr
           kis' = kis
             { theirFrag       = theirFrag'
             , theirChainState = theirChainState'
             }
       atomically $ writeTVar varCandidate theirFrag'
+
+      traceWith tracer $ TraceDownloadedHeader2 "DONE" hdr
 
       continueWithState kis' $ nextStep mkPipelineDecision n theirTip
 
@@ -995,6 +1005,7 @@ data TraceChainSyncClientEvent blk tip
     -- candidate's chain.
   | TraceException (ChainSyncClientException blk tip)
     -- ^ An exception was thrown by the Chain Sync Client.
+  | TraceDownloadedHeader2 String (Header blk)
 
 deriving instance ( SupportedBlock blk
                   , Eq (ValidationErr (BlockProtocol blk))

@@ -29,6 +29,8 @@ module Test.Dynamic.Network (
   , NodeDBs (..)
   ) where
 
+import System.IO.Unsafe (unsafePerformIO)
+
 import qualified Control.Exception as Exn
 import           Control.Monad
 import           Control.Tracer
@@ -79,6 +81,7 @@ import           Ouroboros.Consensus.NodeId
 import           Ouroboros.Consensus.NodeKernel
 import           Ouroboros.Consensus.NodeNetwork
 import           Ouroboros.Consensus.Protocol.Abstract
+import           Ouroboros.Consensus.Util.Condense (condense)
 import           Ouroboros.Consensus.Util.IOLike
 import           Ouroboros.Consensus.Util.Orphans ()
 import           Ouroboros.Consensus.Util.ResourceRegistry
@@ -112,6 +115,7 @@ data NodeNetworkArgs m blk = NodeNetworkArgs
   , nnaNodeJoinPlan        :: !NodeJoinPlan
   , nnaNodeTopology        :: !NodeTopology
   , nnaNumCoreNodes        :: !NumCoreNodes
+  , nnaNumSlots            :: !NumSlots
   , nnaOutagesPlan         :: !OutagesPlan
   , nnaProtocol            :: !(CoreNodeId -> ProtocolInfo blk)
   , nnaQuiescenceThreshold :: !DiffTime
@@ -143,6 +147,7 @@ runNodeNetwork NodeNetworkArgs
   , nnaNodeJoinPlan        = nodeJoinPlan
   , nnaNodeTopology        = nodeTopology
   , nnaNumCoreNodes        = numCoreNodes
+  , nnaNumSlots
   , nnaOutagesPlan
   , nnaProtocol            = pInfo
   , nnaQuiescenceThreshold = quiescenceThreshold
@@ -162,6 +167,15 @@ runNodeNetwork NodeNetworkArgs
     -- edge denotes a bundle of mini protocols with client threads on the tail
     -- node and server threads on the head node. These mini protocols begin as
     -- soon as both nodes have joined the network, according to @nodeJoinPlan@.
+    traceWith nullDebugTracer ""
+    traceWith nullDebugTracer (show nnaNumSlots)
+    traceWith nullDebugTracer (condense nodeTopology)
+    traceWith nullDebugTracer (condense nodeJoinPlan)
+    traceWith nullDebugTracer (condense nnaOutagesPlan)
+    traceWith nullDebugTracer (show mbInitSMG)
+    let {-# NOINLINE getMonotonicTime' #-}
+        getMonotonicTime' _x = getMonotonicTime
+    traceWith nullDebugTracer (show $ unsafePerformIO (getMonotonicTime' initRNG))
 
     (livePipesVar, downRequestVars) <-
       spawnTickerThread
@@ -179,7 +193,7 @@ runNodeNetwork NodeNetworkArgs
     let edgeTracer = nullDebugTracer <> Tracer go
           where
             go = \case
-              (eg, s, st@MiniProtocolDelayed, mbE) -> forM_ mbE $ \case
+              (eg, s, st@MiniProtocolDown, mbE) -> forM_ mbE $ \case
                 MPEEPlannedOutage _ mbE' -> go (eg, s, st, mbE')
                 _                        -> atomically $ do
                   let upd = Map.insertWith Set.union s (Set.singleton eg)
@@ -191,7 +205,8 @@ runNodeNetwork NodeNetworkArgs
     let edges = edgesNodeTopology nodeTopology
     forM_ edges $ \edge -> do
       void $ forkLinkedThread registry $ do
-        undirectedEdge edgeTracer mbSMG livePipesVar downRequestVars nodeVars edge
+        let tr = edgeTracer <> if CoreNodeId 0 == fst edge then showTracing nullDebugTracer else nullTracer
+        undirectedEdge tr mbSMG livePipesVar downRequestVars nodeVars edge
 
     -- create nodes
     let nodesByJoinSlot =
@@ -320,7 +335,8 @@ runNodeNetwork NodeNetworkArgs
           simChaChaT varDRG id $ testGenTxs numCoreNodes cfg ledger
         void $ addTxs mempool txs
 
-    mkArgs :: NodeConfig (BlockProtocol blk)
+    mkArgs :: CoreNodeId
+           -> NodeConfig (BlockProtocol blk)
            -> ExtLedgerState blk
            -> EpochInfo m
            -> Tracer m (Point blk)
@@ -330,6 +346,7 @@ runNodeNetwork NodeNetworkArgs
            -> NodeDBs (StrictTVar m MockFS)
            -> ChainDbArgs m blk
     mkArgs
+      coreNodeId
       cfg initLedger epochInfo
       invalidTracer addTracer
       nodeDBs = ChainDbArgs
@@ -364,7 +381,7 @@ runNodeNetwork NodeNetworkArgs
                                         else Nothing
         , cdbGenesis          = return initLedger
         -- Misc
-        , cdbTracer           = Tracer $ \case
+        , cdbTracer           = ((if CoreNodeId 0 == coreNodeId then showTracing nullDebugTracer else nullTracer) <>) $ Tracer $ \case
               ChainDB.TraceAddBlockEvent
                   (ChainDB.AddBlockValidation ChainDB.InvalidBlock
                       { _invalidPoint = p })
@@ -420,7 +437,7 @@ runNodeNetwork NodeNetworkArgs
             } = nodeInfo
 
       epochInfo <- newEpochInfo $ nodeEpochSize (Proxy @blk) pInfoConfig
-      chainDB <- ChainDB.openDB $ mkArgs
+      chainDB <- ChainDB.openDB $ mkArgs coreNodeId
           pInfoConfig pInfoInitLedger epochInfo
           (nodeEventsInvalids nodeInfoEvents)
           (Tracer $ \(p, bno) -> do
@@ -429,7 +446,7 @@ runNodeNetwork NodeNetworkArgs
           nodeInfoDBs
 
       let nodeArgs = NodeArgs
-            { tracers             = nullDebugTracers
+            { tracers             = (if CoreNodeId 0 == coreNodeId then showTracers nullDebugTracer else nullDebugTracers)
                 { forgeTracer = nodeEventsForges nodeInfoEvents
                 }
             , registry            = registry
@@ -449,7 +466,7 @@ runNodeNetwork NodeNetworkArgs
       nodeKernel <- initNodeKernel nodeArgs
       let app = consensusNetworkApps
                   nodeKernel
-                  nullDebugProtocolTracers
+                  (if CoreNodeId 0 /= coreNodeId then nullDebugProtocolTracers else showProtocolTracers nullDebugTracer)
                   protocolCodecsId
                   (protocolHandlers nodeArgs nodeKernel)
 
@@ -526,7 +543,7 @@ directedEdge maxLatencies tr btime mbSMG livePipesVar drv s0 nodeapp1 nodeapp2 =
         case redelayed of
           Just s' -> downState s' $ Just (MPEEPlannedOutage s' mbE)
           Nothing -> do
-            traceWith tr (s, MiniProtocolRestarting, mbE)
+            traceWith tr (s, MiniProtocolUp, mbE)
             upState
 
     -- up, running until it crashes or the down request is set (both of which
@@ -546,7 +563,7 @@ directedEdge maxLatencies tr btime mbSMG livePipesVar drv s0 nodeapp1 nodeapp2 =
           atomically $ mapM_ (forgetLivePipeSTM livePipesVar) pids
 
           s <- atomically $ getCurrentSlot btime
-          traceWith tr (s, MiniProtocolDelayed, Just e)
+          traceWith tr (s, MiniProtocolDown, Just e)
 
           -- when to try restarting (may delayed if a subsequent down request
           -- is made)
@@ -786,7 +803,7 @@ getTestOutput nodes testOutputMPEEs = do
 -------------------------------------------------------------------------------}
 
 nullDebugTracer :: (Applicative m, Show a) => Tracer m a
-nullDebugTracer = nullTracer `asTypeOf` showTracing debugTracer
+nullDebugTracer = nullTracer `asTypeOf` showTracing nullDebugTracer
 
 nullDebugTracers ::
      ( Monad m
@@ -795,7 +812,7 @@ nullDebugTracers ::
      , TracingConstraints blk
      )
   => Tracers m peer blk
-nullDebugTracers = nullTracers `asTypeOf` showTracers debugTracer
+nullDebugTracers = nullTracers `asTypeOf` showTracers nullDebugTracer
 
 nullDebugProtocolTracers ::
      ( Monad m
@@ -806,9 +823,9 @@ nullDebugProtocolTracers ::
      )
   => ProtocolTracers m peer blk failure
 nullDebugProtocolTracers =
-  nullProtocolTracers `asTypeOf` showProtocolTracers debugTracer
+  nullProtocolTracers `asTypeOf` showProtocolTracers nullDebugTracer
 
--- These constraints are when using @showTracer(s) debugTracer@ instead of
+-- These constraints are when using @showTracer(s) nullDebugTracer@ instead of
 -- @nullTracer(s)@.
 type TracingConstraints blk =
   ( Show blk
@@ -891,7 +908,7 @@ data MiniProtocolExpectedException blk
 
 instance (SupportedBlock blk) => Exception (MiniProtocolExpectedException blk)
 
-data MiniProtocolState = MiniProtocolDelayed | MiniProtocolRestarting
+data MiniProtocolState = MiniProtocolDown | MiniProtocolUp
   deriving (Show)
 
 -- | Any synchronous exception from a 'directedEdge' that was not handled as a
@@ -968,6 +985,7 @@ spawnTickerThread
     do
       outagesVar <- uncheckedNewTVarM plan0
       onSlotChange btime $ \s -> do
+        traceWith nullDebugTracer $ "TICK " <> show s
         -- wait until this slot quiesces
         blockUntilQuiescent livePipesVar quiescenceThreshold
 
@@ -979,6 +997,7 @@ spawnTickerThread
           when (nextSlot == s1) $ do
             atomically $ writeTVar outagesVar plan'
 
+            traceWith nullDebugTracer $ "XXX " <> condense (s2s, plan')
             forM_ (Map.toList s2s) $ \(e, s2) -> do
               case Map.lookup e downRequestVars of
                 Nothing  -> error "bad outage plan"

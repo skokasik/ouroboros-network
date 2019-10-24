@@ -14,6 +14,7 @@ import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Maybe (fromJust)
 import           Data.Reflection (give)
+import qualified Data.Set as Set
 import           Data.Time (Day (..), UTCTime (..))
 
 import           Test.QuickCheck
@@ -48,7 +49,7 @@ import           Test.Dynamic.Util.OutagesPlan
 import           Test.Util.Orphans.Arbitrary ()
 
 tests :: TestTree
-tests = testGroup "Dynamic chain generation"
+tests = testGroup "Dynamic chain generation" $
     [ localOption (QuickCheckTests 10) $   -- each takes about 0.5 seconds!
       testProperty "check Real PBFT setup" $
         \numCoreNodes ->
@@ -77,6 +78,18 @@ tests = testGroup "Dynamic chain generation"
             }
     , testProperty "simple Real PBFT convergence" $
         prop_simple_real_pbft_convergence
+    , testProperty "repro" $
+        prop_simple_real_pbft_convergence
+          TestConfig
+            { numCoreNodes = NumCoreNodes 3
+            , numSlots = NumSlots 58
+            , nodeJoinPlan = NodeJoinPlan (Map.fromList [(CoreNodeId 0,SlotNo {unSlotNo = 12}),(CoreNodeId 1,SlotNo {unSlotNo = 14}),(CoreNodeId 2,SlotNo {unSlotNo = 50})])
+            , nodeTopology = NodeTopology (Map.fromList [(CoreNodeId 0,Set.fromList []),(CoreNodeId 1,Set.fromList [CoreNodeId 0]),(CoreNodeId 2,Set.fromList [CoreNodeId 0,CoreNodeId 1])])
+            , outagesPlan = OutagesPlan_Unsafe (Map.fromList [((OutageInterval (SlotNo 23) (SlotNo 57)),Set.fromList [(CoreNodeId 1,CoreNodeId 0)]),((OutageInterval (SlotNo 31) (SlotNo 57)),Set.fromList [(CoreNodeId 0,CoreNodeId 1)])])
+                                               (Map.fromList [((CoreNodeId 0,CoreNodeId 1),Set.fromList [(OutageInterval (SlotNo 31) (SlotNo 57))]),((CoreNodeId 1,CoreNodeId 0),Set.fromList [(OutageInterval (SlotNo 23) (SlotNo 57))])])
+            , latencySeed = noLatencySeed
+            }
+          Seed {getSeed = (17296037716940651709,13461320881514679195,11329762743956314106,9937081309193141365,2282973395127095012)}
     ]
 
 prop_setup_coreNodeId ::

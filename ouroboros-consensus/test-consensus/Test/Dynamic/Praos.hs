@@ -84,6 +84,16 @@ tests = testGroup "Dynamic chain generation"
               , latencySeed
               }
                 seed
+    , testProperty "repro" $
+            testPraos' TestConfig
+              { numCoreNodes
+              , numSlots
+              , nodeJoinPlan = NodeJoinPlan (Map.fromList [(CoreNodeId 0,SlotNo {unSlotNo = 14}),(CoreNodeId 1,SlotNo {unSlotNo = 24}),(CoreNodeId 2,SlotNo {unSlotNo = 41})])
+              , nodeTopology = NodeTopology (Map.fromList [(CoreNodeId 0,Set.fromList []),(CoreNodeId 1,Set.fromList [CoreNodeId 0]),(CoreNodeId 2,Set.fromList [CoreNodeId 0,CoreNodeId 1])])
+              , outagesPlan = OutagesPlan_Unsafe (Map.fromList [((OutageInterval (SlotNo 24) (SlotNo 44)),Set.fromList [(CoreNodeId 1,CoreNodeId 0)]),((OutageInterval (SlotNo 25) (SlotNo 44)),Set.fromList [(CoreNodeId 0,CoreNodeId 1)]),((OutageInterval (SlotNo 41) (SlotNo 44)),Set.fromList [(CoreNodeId 0,CoreNodeId 2)]),((OutageInterval (SlotNo 42) (SlotNo 44)),Set.fromList [(CoreNodeId 2,CoreNodeId 0),(CoreNodeId 2,CoreNodeId 1)]),((OutageInterval (SlotNo 43) (SlotNo 43)),Set.fromList [(CoreNodeId 1,CoreNodeId 2)])]) (Map.fromList [((CoreNodeId 0,CoreNodeId 1),Set.fromList [(OutageInterval (SlotNo 25) (SlotNo 44))]),((CoreNodeId 0,CoreNodeId 2),Set.fromList [(OutageInterval (SlotNo 41) (SlotNo 44))]),((CoreNodeId 1,CoreNodeId 0),Set.fromList [(OutageInterval (SlotNo 24) (SlotNo 44))]),((CoreNodeId 1,CoreNodeId 2),Set.fromList [(OutageInterval (SlotNo 43) (SlotNo 43))]),((CoreNodeId 2,CoreNodeId 0),Set.fromList [(OutageInterval (SlotNo 42) (SlotNo 44))]),((CoreNodeId 2,CoreNodeId 1),Set.fromList [(OutageInterval (SlotNo 42) (SlotNo 44))])])
+              , latencySeed = noLatencySeed
+              }
+              Seed {getSeed = (3272636711102509345,3927027596678276675,14598519800923595328,14656711331130536924,5792929034892262228)}
     ]
   where
     testPraos :: Seed -> Property

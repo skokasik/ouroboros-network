@@ -247,6 +247,7 @@ runTestNetwork pInfo
       , nnaQuiescenceThreshold = 50000   -- io-sim "seconds"
       , nnaNodeTopology        = nodeTopology
       , nnaNumCoreNodes        = numCoreNodes
+      , nnaNumSlots            = numSlots
       , nnaOutagesPlan         = outagesPlan
       , nnaProtocol            = pInfo
       , nnaRegistry            = registry
@@ -306,7 +307,7 @@ prop_general k TestConfig
     tabulate "minimumDegreeNodeTopology" [show (minimumDegreeNodeTopology nodeTopology)] $
     tabulate "no outages" [show noOutages] $
     prop_synced_edges .&&.
-    (property (not noOutages) .||.
+    (implies noOutages $       HOW TO REMOVE THIS CONDITION?
        prop_all_common_prefix
           maxForkLength
           (Map.elems nodeChains) .&&.
@@ -645,8 +646,7 @@ prop_general k TestConfig
         edgeProp2 s (n1, p1) (n2, p2) =
             counterexample msg $
             implies ante $
-            counterexample "conj1" conj1 .&&.
-            counterexample "conj2" conj2
+            property $ conj1 .&&. conj2
           where
             c1 = lookupPoint p1
             c2 = lookupPoint p2

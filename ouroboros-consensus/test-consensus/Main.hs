@@ -1,6 +1,7 @@
 module Main (main) where
 
 import           Test.Tasty
+import           Test.Tasty.QuickCheck
 
 import qualified Test.Consensus.BlockchainTime (tests)
 import qualified Test.Consensus.ChainSyncClient (tests)
@@ -19,7 +20,7 @@ main = defaultMain tests
 
 tests :: TestTree
 tests =
-  testGroup "ouroboros-consensus"
+  testGroup "ouroboros-consensus" $
   [ Test.Consensus.BlockchainTime.tests
   , Test.Consensus.ChainSyncClient.tests
   , Test.Consensus.Mempool.tests
@@ -27,6 +28,14 @@ tests =
   , Test.Consensus.ResourceRegistry.tests
   , Test.Dynamic.Util.Tests.tests
   , Test.Dynamic.BFT.tests
+  , Test.Dynamic.LeaderSchedule.tests
+  , Test.Dynamic.PBFT.tests
+  , Test.Dynamic.Praos.tests
+  , Test.Dynamic.RealPBFT.tests
+  ]
+  `seq`
+  map (localOption (QuickCheckTests 100))
+  [ Test.Dynamic.BFT.tests
   , Test.Dynamic.LeaderSchedule.tests
   , Test.Dynamic.PBFT.tests
   , Test.Dynamic.Praos.tests
