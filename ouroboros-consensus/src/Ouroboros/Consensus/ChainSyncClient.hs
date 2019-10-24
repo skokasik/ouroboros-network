@@ -652,18 +652,18 @@ chainSyncClient mkPipelineDecision0 getTipBlockNo tracer cfg btime
           -- The invariant guarantees us that the intersection of their tip
           -- and our tip is within k blocks from our tip. This means that the
           -- anachronistic ledger view must be available, unless they are
-          -- too far /ahead/ of us. In this case we must simply wait
+          -- too far /ahead/ of us.
 
           -- TODO: Chain sync Client: Reuse anachronistic ledger view? #581
           case anachronisticProtocolLedgerView cfg curLedger (pointSlot hdrPoint) of
             -- unexpected alternative; see comment before this case expression
-            Left TooFarBehind ->
+            Left anachronyFailure ->
                 disconnect InvalidRollForward
-                  { _newPoint = hdrPoint
-                  , _ourTip   = ourTip
-                  , _theirTip = theirTip
+                  { _newPoint         = hdrPoint
+                  , _ourTip           = ourTip
+                  , _theirTip         = theirTip
+                  , _anachronyFailure = anachronyFailure
                   }
-            Left TooFarAhead  -> retry
             Right view -> case view `SB.at` hdrSlot of
                 Nothing -> error "anachronisticProtocolLedgerView invariant violated"
                 Just lv -> return lv
@@ -877,6 +877,7 @@ data ChainSyncClientException blk tip =
       { _newPoint :: Point blk
       , _ourTip   :: Our   tip
       , _theirTip :: Their tip
+      , _anachronyFailure :: AnachronyFailure
       }
 
       -- | The upstream node rolled back more than @k@ blocks.
