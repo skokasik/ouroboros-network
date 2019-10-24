@@ -764,20 +764,23 @@ chainBlockNo f = \case
   _ Chain.:> a  -> f a
 
 -- | The shortest prefix of C whose block number plus the security parameter k
--- equals C's block number
+-- equals C's block number (or 'Genesis' if no such prefix exists)
 --
 -- Notably, the prefix never ends in an EBB.
 --
 immutablePrefix :: SecurityParam -> (a -> BlockNo) -> Chain a -> Chain a
-immutablePrefix k f = \c -> go (maxRollbacks k) (chainBlockNo f c) c
+immutablePrefix k f c0 =
+    if k' >= bno0 then Chain.Genesis else go c0
   where
-    go toRollback bno c = case c of
-      Chain.Genesis        -> Chain.Genesis
-      c' Chain.:> b
-        | bno == f b      -> go toRollback (f b) c'
-        | 0 == toRollback -> c
-        | otherwise       -> go (toRollback - 1) (f b) c'
+    k'   = BlockNo (maxRollbacks k)
+    bno0 = chainBlockNo f c0
+    bno  = bno0 - k'
 
+    go c = case c of
+      Chain.Genesis                -> Chain.Genesis
+      c' Chain.:> _
+        | bno <= chainBlockNo f c' -> go c'
+        | otherwise                -> c
 
 {-
 commonPrefix ::
