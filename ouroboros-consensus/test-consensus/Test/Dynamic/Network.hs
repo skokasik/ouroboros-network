@@ -983,7 +983,7 @@ spawnTickerThread
               case Map.lookup e downRequestVars of
                 Nothing  -> error "bad outage plan"
                 Just drv -> do
-                  atomically $ writeTVar drv (Just s2)
+                  atomically $ writeTVar drv (Just (succ s2))
                   atomically $ readTVar drv >>= \case
                     Nothing -> pure ()
                     Just{}  -> retry

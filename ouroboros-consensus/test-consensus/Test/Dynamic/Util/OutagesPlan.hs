@@ -22,6 +22,7 @@ import           Data.Maybe (fromMaybe, mapMaybe, maybeToList)
 import qualified Data.Monoid as Monoid
 import           Data.Set (Set)
 import qualified Data.Set as Set
+import           GHC.Stack (HasCallStack)
 
 import           Test.QuickCheck
 
@@ -148,16 +149,19 @@ plannedSlotOutageEdges s (OutagesPlan_Unsafe mIE _) =
 
 -- | Pop an outage planned to start as soon as any other
 --
-nextView :: OutagesPlan -> Maybe ((OutageInterval, OutageEdge), OutagesPlan)
+nextView ::
+     HasCallStack
+  => OutagesPlan
+  -> Maybe ((OutageInterval, OutageEdge), OutagesPlan)
 nextView (OutagesPlan_Unsafe mIE mEI) =
     case Map.minViewWithKey mIE of
         Nothing              -> Nothing
         Just ((i, es), mIE') -> case Set.minView es of
-            Nothing       -> Nothing   -- an ignorable invariant violation
+            Nothing       -> error "impossible"
             Just (e, es') -> Just
                 ( (i, e)
                 , OutagesPlan_Unsafe
-                      (Map.insert i es' mIE')
+                      (mapSetInserts i es' mIE')
                       (mapSetDelete e i mEI)
                 )
 
@@ -274,6 +278,15 @@ mapSetDelete k v m = Map.alter f k m
     f = \case
         Nothing -> Nothing
         Just vs -> nonEmptySet $ Set.delete v vs
+
+mapSetInserts :: (Ord k, Ord v) => k -> Set v -> Map k (Set v) -> Map k (Set v)
+mapSetInserts k vs m
+  | Set.null vs = m
+  | otherwise   = Map.alter (Just . f) k m
+  where
+    f = \case
+        Nothing  -> vs
+        Just old -> Set.union old vs
 
 mapSetInsert :: (Ord k, Ord v) => k -> v -> Map k (Set v) -> Map k (Set v)
 mapSetInsert k v m = Map.alter (Just . f) k m
