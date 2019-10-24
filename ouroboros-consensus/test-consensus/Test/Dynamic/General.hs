@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE NamedFieldPuns      #-}
+{-# LANGUAGE NumericUnderscores  #-}
 {-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -18,6 +19,7 @@ module Test.Dynamic.General (
   , TestOutput (..)
   ) where
 
+import qualified Control.Exception as Exn
 import           Control.Monad (guard, join)
 import           Data.Function (on)
 import           Data.Map (Map)
@@ -28,6 +30,8 @@ import qualified Data.Set as Set
 import           Data.Word (Word64)
 import           GHC.Stack (HasCallStack)
 import qualified System.Random.SplitMix as SM
+import qualified System.Timeout as TO
+import           System.IO.Unsafe (unsafePerformIO)
 import           Test.QuickCheck
 
 import           Control.Monad.IOSim (runSimOrThrow)
@@ -189,6 +193,13 @@ instance Arbitrary TestConfig where
   Running tests
 -------------------------------------------------------------------------------}
 
+boundedEvaluationTime :: HasCallStack => a -> a
+boundedEvaluationTime a = unsafePerformIO $ do
+  let thirtySecondsMS = 30_000_000   -- in microseconds
+  TO.timeout thirtySecondsMS (Exn.evaluate a) >>= \case
+      Nothing -> error "run took longer than 30 (real) seconds"
+      Just x  -> pure x
+
 -- | Thin wrapper around 'runNodeNetwork'
 --
 -- Provides a 'ResourceRegistry' and 'BlockchainTime', runs in the IO sim
@@ -196,7 +207,8 @@ instance Arbitrary TestConfig where
 --
 runTestNetwork ::
   forall blk.
-     ( RunNode blk
+     ( HasCallStack
+     , RunNode blk
      , TxGen blk
      , TracingConstraints blk
      )
@@ -213,7 +225,7 @@ runTestNetwork pInfo
     , outagesPlan
     , latencySeed
     }
-  seed = runSimOrThrow $ do
+  seed = boundedEvaluationTime $ runSimOrThrow $ do
     registry  <- unsafeNewRegistry
 
     -- the latest slot that is ready to start
