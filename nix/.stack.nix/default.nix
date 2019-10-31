@@ -30,6 +30,7 @@
         ouroboros-consensus = ./ouroboros-consensus.nix;
         io-sim = ./io-sim.nix;
         io-sim-classes = ./io-sim-classes.nix;
+        Win32-network = ./Win32-network.nix;
         contra-tracer = ./contra-tracer.nix;
         cardano-binary = ./cardano-binary.nix;
         cardano-binary-test = ./cardano-binary-test.nix;

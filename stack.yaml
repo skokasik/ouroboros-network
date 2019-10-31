@@ -10,6 +10,7 @@ packages:
   - ./ouroboros-consensus
   - ./io-sim
   - ./io-sim-classes
+  - ./Win32-network
 
 extra-deps:
   - git: https://github.com/input-output-hk/iohk-monitoring-framework
