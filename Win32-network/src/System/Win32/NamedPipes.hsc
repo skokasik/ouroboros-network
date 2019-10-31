@@ -188,7 +188,7 @@ connectNamedPipe hpipe mb_over = do
          -- even though the function returns zero.
          err_code <- getLastError
          unless (err_code == eRROR_PIPE_CONNECTED)
-                (failWith "ConnectNamedPipe" err_code)
+                (failWith ("ConnectNamedPipe (" ++ show err_code ++ ")") err_code)
 
 eRROR_PIPE_CONNECTED :: ErrCode
 eRROR_PIPE_CONNECTED = #const ERROR_PIPE_CONNECTED
