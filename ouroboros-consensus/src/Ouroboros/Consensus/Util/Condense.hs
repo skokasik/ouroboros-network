@@ -24,7 +24,7 @@ import           Formatting (build, sformat)
 import           Numeric.Natural
 import           Text.Printf (printf)
 
-import           Cardano.Crypto (VerificationKey)
+import           Cardano.Crypto (SigningKey, VerificationKey)
 import           Cardano.Crypto.DSIGN (Ed448DSIGN, MockDSIGN, SigDSIGN,
                      pattern SigEd448DSIGN, pattern SigMockDSIGN,
                      SignedDSIGN (..))
@@ -154,6 +154,18 @@ instance Condense (HeaderHash b) => Condense (ChainHash b) where
 {-------------------------------------------------------------------------------
   Orphans for cardano-crypto-wrapper
 -------------------------------------------------------------------------------}
+
+--
+--
+--
+--
+--  -------------------------------------- REVIEW ME --------------------------
+-- 
+-- Policy against rendering private keys? 
+--
+--
+instance Condense SigningKey where
+  condense = unpack . sformat build
 
 instance Condense VerificationKey where
   condense = unpack . sformat build
