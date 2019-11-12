@@ -288,7 +288,7 @@ forkBlockProduction
        (IOLike m, ProtocolLedgerView blk)
     => InternalState m peer blk -> m ()
 forkBlockProduction IS{..} =
-    onSlotChange btime $ \currentSlot -> do
+    onSlotChange registry btime $ \currentSlot -> do
       varDRG <- newTVarM =<< (PRNG <$> produceDRG)
       -- See the docstring of 'withSyncState' for why we're using it instead
       -- of 'atomically'.

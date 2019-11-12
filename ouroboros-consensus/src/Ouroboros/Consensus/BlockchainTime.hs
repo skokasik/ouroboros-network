@@ -71,7 +71,7 @@ data BlockchainTime m = BlockchainTime {
       -- itself was created.
       --
       -- Use sites should call 'onSlotChange' rather than 'onSlotChange_'.
-    , onSlotChange_  :: HasCallStack => (SlotNo -> m ()) -> m ()
+    , onSlotChange_ :: HasCallStack => ResourceRegistry m -> (SlotNo -> m ()) -> m ()
 
       -- | Spawn a thread to run an action when reaching the specified slot
       --
@@ -82,7 +82,7 @@ data BlockchainTime m = BlockchainTime {
       -- terminate as soon as the action does.
       --
       -- Use sites should call 'onSlot' rather than 'onSlot_'.
-    , onSlot_        :: HasCallStack => SlotNo -> m () -> m ()
+    , onSlot_        :: HasCallStack => ResourceRegistry m -> SlotNo -> m () -> m ()
     }
 
 -- | Returns 'True' immediately if the requested slot is already over, else
@@ -104,21 +104,21 @@ blockUntilSlot btime slot = do
 -- | Wrapper around 'onSlotChange_' to ensure 'HasCallStack' constraint
 --
 -- See documentation of 'onSlotChange_'.
-onSlotChange :: HasCallStack => BlockchainTime m -> (SlotNo -> m ()) -> m ()
-onSlotChange = onSlotChange_
+onSlotChange :: HasCallStack => ResourceRegistry m -> BlockchainTime m -> (SlotNo -> m ()) -> m ()
+onSlotChange rr btime = onSlotChange_ btime rr
 
 -- | Wrapper around 'onSlot_' to ensure 'HasCallStack' constraint
-onSlot :: HasCallStack => BlockchainTime m -> SlotNo -> m () -> m ()
-onSlot = onSlot_
+onSlot :: HasCallStack => ResourceRegistry m -> BlockchainTime m -> SlotNo -> m () -> m ()
+onSlot rr btime = onSlot_ btime rr
 
 -- | Default implementation of 'onSlot' (used internally only)
 defaultOnSlot :: forall m. (IOLike m, HasCallStack)
-              => ResourceRegistry m
-              -> STM m SlotNo
+              => STM m SlotNo
+              -> ResourceRegistry m
               -> SlotNo
               -> m ()
               -> m ()
-defaultOnSlot registry getCurrentSlot slot action = do
+defaultOnSlot getCurrentSlot registry slot action = do
     startingSlot <- atomically getCurrentSlot
     when (startingSlot >= slot) $
       throwM $ OnSlotTooLate slot startingSlot
@@ -200,8 +200,8 @@ newTestBlockchainTime registry (NumSlots numSlots) slotLen = do
         btime :: BlockchainTime m
         btime = BlockchainTime {
             getCurrentSlot = get
-          , onSlot_        = defaultOnSlot registry get
-          , onSlotChange_  = onEachChange registry Running (Just initVal) get
+          , onSlot_        = defaultOnSlot get
+          , onSlotChange_  = \rr -> onEachChange rr Running (Just initVal) get
           }
 
     return $ TestBlockchainTime
@@ -241,8 +241,8 @@ realBlockchainTime registry slotLen start = do
     void $ forkLinkedThread registry $ loop slot
     return BlockchainTime {
         getCurrentSlot = readTVar slot
-      , onSlot_        = defaultOnSlot registry (readTVar slot)
-      , onSlotChange_  = onEachChange registry id (Just first) (readTVar slot)
+      , onSlot_        = defaultOnSlot (readTVar slot)
+      , onSlotChange_  = \rr -> onEachChange rr id (Just first) (readTVar slot)
       }
   where
     -- In each iteration of the loop, we recompute how long to wait until
