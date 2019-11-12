@@ -69,4 +69,33 @@ Concern:
 It seems like the new node may need to persistently re-generate that
 transaction until it finds it in its immutable DB.
 
+Implementation Details:
+
+The test infrastructure prior to this PR maintains two relatively flat
+hierarchies of threads. The test infrastructure thread is the root of both, and
+the hierarchies allow for the desirable use of combinators along the lines of
+@withAsync@.
+
+  * In the first hierarchy, the test infrastructure spawns a thread for each
+    undirected edge in the planned topology. Each such thread in turn spawns
+    two threads, one for each directed edge. These in turn spawn mini protocol
+    threads for the two peers of that directed edge. As a result, an exception
+    from any of the mini protocol threads for either peer brings down the
+    threads on both peers involved in that directed edge.
+
+  * In the second hierarchy, the test infrastructure spawns each node's
+    "internal" threads (e.g. StorageDB, block production, etc).
+
+As a result of these separate hierarchies, termination of a node's internal
+threads does not automatically terminate its mini protocol threads. (It
+actually does, but that's because any such termination is currently fatal and
+brings down the whole test.)
+
+As of Issue #1202, node instances will be stopped and restarted/replaced during
+the test, which will also require that the threads for relevant edges be
+similarly cycled. We must connect the two hierarchies.
+
+We will use the @async@ @link@ functionality for this, and the nodes will have
+to terminate exceptionally.
+
 -}
