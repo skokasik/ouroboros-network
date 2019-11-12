@@ -17,6 +17,7 @@ module Ouroboros.Consensus.BlockchainTime (
   , NumSlots(..)
   , TestBlockchainTime(..)
   , newTestBlockchainTime
+  , toFinalSlot
     -- * Real blockchain time
   , realBlockchainTime
     -- * Time to slots and back again
@@ -145,6 +146,11 @@ instance Exception OnSlotException
 -- | Number of slots
 newtype NumSlots = NumSlots Int
   deriving (Show)
+
+toFinalSlot :: NumSlots -> Maybe SlotNo
+toFinalSlot = \case
+  NumSlots 0 -> Nothing
+  NumSlots t -> Just $ SlotNo $ fromIntegral t - 1
 
 -- | The current time during a test run.
 data TestClock =
