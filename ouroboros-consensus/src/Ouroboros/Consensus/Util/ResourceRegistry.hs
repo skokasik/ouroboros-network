@@ -23,6 +23,8 @@ module Ouroboros.Consensus.Util.ResourceRegistry (
   , threadId
   , forkThread
   , cancelThread
+  , linkThread
+  , linkOnlyThread
   , waitThread
   , waitAnyThread
   , linkToRegistry
@@ -750,6 +752,12 @@ forkThread rr body = snd <$>
 -- | Link specified 'Thread' to the (thread that created) the registry
 linkToRegistry :: IOLike m => Thread m a -> m ()
 linkToRegistry t = linkTo (registryThread $ threadRegistry t) (threadAsync t)
+
+linkThread :: IOLike m => Thread m a -> m ()
+linkThread = link . threadAsync
+
+linkOnlyThread :: IOLike m => (SomeException -> Bool) -> Thread m a -> m ()
+linkOnlyThread p = linkOnly p . threadAsync
 
 -- | Fork a thread and link to it to the registry.
 --

@@ -45,6 +45,8 @@ module Ouroboros.Consensus.Util.IOLike (
   , Async
   , async
   , asyncThreadId
+  , link
+  , linkOnly
   , linkTo
   , wait
   , waitAny
