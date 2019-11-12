@@ -206,14 +206,14 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
     undirectedEdge tr nodeVars (node1, node2) = do
       -- block until both endpoints have joined the network
       (endpoint1, endpoint2) <- do
-        let getKernel nv = atomically $ do
+        let get nv = atomically $ do
               NodeInstances m <- readTVar nv
               case Map.lookupMax m of
-                Just (_, NodeInstance{niApp} : _) -> pure niApp
-                _                                 -> retry
+                Just (_, ni : _) -> pure ni
+                _                -> retry
             lu node = case Map.lookup node nodeVars of
               Nothing -> error $ "node not found: " ++ show node
-              Just nv -> (,) node <$> getKernel nv
+              Just nv -> (,) node <$> get nv
         (,) <$> lu node1 <*> lu node2
 
       -- spawn threads for both directed edges
@@ -431,8 +431,8 @@ directedEdge ::
   forall m blk. (IOLike m, SupportedBlock blk)
   => Tracer m (SlotNo, MiniProtocolState, MiniProtocolExpectedException blk)
   -> BlockchainTime m
-  -> (CoreNodeId, LimitedApp m NodeId blk)
-  -> (CoreNodeId, LimitedApp m NodeId blk)
+  -> (CoreNodeId, NodeInstance m blk)
+  -> (CoreNodeId, NodeInstance m blk)
   -> m ()
 directedEdge tr btime nodeapp1 nodeapp2 =
     loopOnMPEE
@@ -467,12 +467,14 @@ directedEdge tr btime nodeapp1 nodeapp2 =
 -- See 'directedEdge'.
 directedEdgeInner ::
   forall m blk. (IOLike m, SupportedBlock blk)
-  => (CoreNodeId, LimitedApp m NodeId blk)
+  => (CoreNodeId, NodeInstance m blk)
      -- ^ client threads on this node
-  -> (CoreNodeId, LimitedApp m NodeId blk)
+  -> (CoreNodeId, NodeInstance m blk)
      -- ^ server threads on this node
   -> m ()
-directedEdgeInner (node1, LimitedApp app1) (node2, LimitedApp app2) = do
+directedEdgeInner
+  (node1, NodeInstance{niApp = LimitedApp app1, niProxy = prx1})
+  (node2, NodeInstance{niApp = LimitedApp app2, niProxy = prx2}) = do
     void $ (>>= withAsyncsWaitAny) $
       fmap flattenPairs $
       sequence $
@@ -507,9 +509,11 @@ directedEdgeInner (node1, LimitedApp app1) (node2, LimitedApp app2) = do
       -> m (m (), m ())
     miniProtocol client server = do
        (chan, dualChan) <- createConnectedChannels
+        -- running "on a node" means being links to its internal threads;
+        -- whatever stopped them should also stop you
        pure
-         ( client app1 (fromCoreNodeId node2) chan
-         , server app2 (fromCoreNodeId node1) dualChan
+         ( do linkThread prx1; client app1 (fromCoreNodeId node2) chan
+         , do linkThread prx2; server app2 (fromCoreNodeId node1) dualChan
          )
 
     wrapMPEE ::
