@@ -35,6 +35,7 @@ import qualified Data.List as List
 import qualified Data.List.NonEmpty as NE
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import           Data.Maybe (fromMaybe)
 import           Data.Proxy (Proxy (..))
 import           Data.Set (Set)
 import qualified Data.Set as Set
@@ -117,7 +118,7 @@ runNodeNetwork :: forall m blk.
                  -> ChaChaDRG
                  -> DiffTime
                  -> m (TestOutput blk)
-runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
+runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
   pInfo initRNG slotLen = do
     -- This function is organized around the notion of a network of nodes as a
     -- simple graph with no loops. The graph topology is determined by
@@ -134,15 +135,16 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
 
     varRNG <- uncheckedNewTVarM initRNG
 
-    -- allocate a TMVar for each node's network app
+    -- allocate a variable to collect the node instances for each CoreNodeId
     nodeVars <- fmap Map.fromList $ do
       forM coreNodeIds $ \nid -> (,) nid <$>
-        uncheckedNewEmptyMVar (error "no App available yet")
+        uncheckedNewTVarM (NodeInstances Map.empty)
+    let _ = nodeVars :: Map CoreNodeId (StrictTVar m (NodeInstances m blk))
 
     -- spawn threads for each undirected edge
     let edges = edgesNodeTopology nodeTopology
     forM_ edges $ \edge -> do
-      void $ forkLinkedThread registry $ do
+      void $ forkLinkedThread registry0 $ do
         undirectedEdge nullDebugTracer nodeVars edge
 
     -- create nodes
@@ -156,13 +158,20 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
       when tooLate $ do
         error $ "unsatisfiable nodeJoinPlan: " ++ show coreNodeId
 
-      -- allocate the node's internal state and spawn its internal threads
-      (node, readNodeInfo, app) <- createNode varRNG coreNodeId
+      void $ forkLinkedThread registry0 $ withRegistry $ \registry1 -> do
+        -- allocate the node's internal state and spawn its internal threads
+        (node, readNodeInfo, app) <- createNode varRNG coreNodeId registry1
 
-      -- unblock the threads of edges that involve this node
-      putMVar nodeVar app
+        atomically $ modifyTVar nodeVar $ insertNodeInstance joinSlot $
+          NodeInstance
+            { niApp      = app
+            , niKernel   = node
+            , niReadInfo = readNodeInfo
+            }
 
-      return (coreNodeId, pInfoConfig (pInfo coreNodeId), node, readNodeInfo)
+        testBlockchainTimeDone testBtime
+
+      return (coreNodeId, pInfoConfig (pInfo coreNodeId), nodeVar)
 
     -- Wait some extra time after the end of the test block fetch and chain
     -- sync to finish
@@ -173,7 +182,7 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
     -- a node. This is important because we close the ChainDBs in
     -- 'getTestOutput' and if background threads that use the ChainDB are
     -- still running at that point, they will throw a 'CloseDBError'.
-    closeRegistry registry
+    closeRegistry registry0
 
     getTestOutput nodes
   where
@@ -188,15 +197,20 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
     undirectedEdge ::
          HasCallStack
       => Tracer m (SlotNo, MiniProtocolState, MiniProtocolExpectedException blk)
-      -> Map CoreNodeId (StrictMVar m (LimitedApp m NodeId blk))
+      -> Map CoreNodeId (StrictTVar m (NodeInstances m blk))
       -> (CoreNodeId, CoreNodeId)
       -> m ()
     undirectedEdge tr nodeVars (node1, node2) = do
       -- block until both endpoints have joined the network
       (endpoint1, endpoint2) <- do
-        let lu node = case Map.lookup node nodeVars of
-              Nothing  -> error $ "node not found: " ++ show node
-              Just var -> (,) node <$> readMVar var
+        let getKernel nv = atomically $ do
+              NodeInstances m <- readTVar nv
+              case Map.lookupMax m of
+                Just (_, NodeInstance{niApp} : _) -> pure niApp
+                _                                 -> retry
+            lu node = case Map.lookup node nodeVars of
+              Nothing -> error $ "node not found: " ++ show node
+              Just nv -> (,) node <$> getKernel nv
         (,) <$> lu node1 <*> lu node2
 
       -- spawn threads for both directed edges
@@ -210,14 +224,15 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
     -- the mempool.
     txProducer :: HasCallStack
                => NodeConfig (BlockProtocol blk)
+               -> ResourceRegistry m
                -> m ChaChaDRG
                   -- ^ How to get a DRG
                -> STM m (ExtLedgerState blk)
                   -- ^ How to get the current ledger state
                -> Mempool m blk TicketNo
                -> m ()
-    txProducer cfg produceDRG getExtLedger mempool =
-      onSlotChange btime $ \_curSlotNo -> do
+    txProducer cfg registry1 produceDRG getExtLedger mempool =
+      onSlotChange registry1 btime $ \_curSlotNo -> do
         varDRG <- uncheckedNewTVarM =<< produceDRG
         txs <- atomically $ do
           ledger <- ledgerState <$> getExtLedger
@@ -232,11 +247,12 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
            -> Tracer m (Point blk, BlockNo)
               -- ^ added block tracer
            -> NodeDBs (StrictTVar m MockFS)
+           -> ResourceRegistry m
            -> ChainDbArgs m blk
     mkArgs
       cfg initLedger epochInfo
       invalidTracer addTracer
-      nodeDBs = ChainDbArgs
+      nodeDBs registry1 = ChainDbArgs
         { -- Decoders
           cdbDecodeHash       = nodeDecodeHeaderHash (Proxy @blk)
         , cdbDecodeBlock      = nodeDecodeBlock cfg
@@ -278,7 +294,7 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
                   -> traceWith addTracer (p, bno)
               _   -> pure ()
         , cdbTraceLedger      = nullTracer
-        , cdbRegistry         = registry
+        , cdbRegistry         = registry1
         , cdbGcDelay          = 0
         }
 
@@ -286,11 +302,12 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
       :: HasCallStack
       => StrictTVar m ChaChaDRG
       -> CoreNodeId
+      -> ResourceRegistry m
       -> m ( NodeKernel m NodeId blk
            , m (NodeInfo blk MockFS [])
            , LimitedApp m NodeId blk
            )
-    createNode varRNG coreNodeId = do
+    createNode varRNG coreNodeId registry1 = do
       let ProtocolInfo{..} = pInfo coreNodeId
 
       let callbacks :: NodeCallbacks m blk
@@ -326,12 +343,13 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
               s <- atomically $ getCurrentSlot btime
               traceWith (nodeEventsAdds nodeInfoEvents) (s, p, bno))
           nodeInfoDBs
+          registry1
 
       let nodeArgs = NodeArgs
             { tracers             = nullDebugTracers
                 { forgeTracer = nodeEventsForges nodeInfoEvents
                 }
-            , registry            = registry
+            , registry            = registry1
             , maxClockSkew        = ClockSkew 1
             , cfg                 = pInfoConfig
             , initState           = pInfoInitState
@@ -352,21 +370,34 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
                   protocolCodecsId
                   (protocolHandlers nodeArgs nodeKernel)
 
-      void $ forkLinkedThread registry $ do
+      void $ forkLinkedThread registry1 $ do
         -- TODO We assume this effectively runs before anything else in the
         -- slot. With such a short transaction (read one TVar) this is likely
         -- but not necessarily certain.
-        onSlotChange btime $ \s -> do
+        onSlotChange registry1 btime $ \s -> do
           bno <- atomically $ ChainDB.getTipBlockNo chainDB
           traceWith (nodeEventsTipBlockNos nodeInfoEvents) (s, bno)
 
-      void $ forkLinkedThread registry $ txProducer
+      void $ forkLinkedThread registry1 $ txProducer
         pInfoConfig
+        registry1
         (produceDRG callbacks)
         (ChainDB.getCurrentLedger chainDB)
         (getMempool nodeKernel)
 
       return (nodeKernel, readNodeInfo, LimitedApp app)
+
+data NodeInstance m blk = NodeInstance
+  { niApp       :: !(LimitedApp m NodeId blk)
+  , niKernel    :: !(NodeKernel m NodeId blk)
+  , niReadInfo  :: !(m (NodeInfo blk MockFS []))
+  }
+
+newtype NodeInstances m blk = NodeInstances (Map SlotNo [NodeInstance m blk])
+
+insertNodeInstance :: SlotNo -> NodeInstance m blk -> NodeInstances m blk -> NodeInstances m blk
+insertNodeInstance s ni (NodeInstances m) =
+    NodeInstances $ Map.alter (Just . (ni :) . fromMaybe []) s m
 
 {-------------------------------------------------------------------------------
   Running the Mini Protocols on an Ordered Pair of Nodes
@@ -575,16 +606,25 @@ data TestOutput blk = TestOutput
 
 -- | Gather the test output from the nodes
 getTestOutput ::
-    forall m blk. (IOLike m, HasHeader blk)
+    forall m blk.
+       ( IOLike m
+       , HasHeader blk
+       , HasCallStack
+       )
     => [( CoreNodeId
         , NodeConfig (BlockProtocol blk)
-        , NodeKernel m NodeId blk
-        , m (NodeInfo blk MockFS [])
+        , StrictTVar m (NodeInstances m blk)
         )]
     -> m (TestOutput blk)
 getTestOutput nodes = do
     (nodeOutputs', tipBlockNos') <- fmap unzip $ forM nodes $
-      \(cid, cfg, node, readNodeInfo) -> do
+      \(cid, cfg, nodeVar) -> do
+        NodeInstances nis <- atomically $ readTVar nodeVar
+        (node, readNodeInfo) <- case Map.lookupMax nis of
+          Just (_, NodeInstance{niKernel, niReadInfo} : _) ->
+            pure (niKernel, niReadInfo)
+          _ -> error "TODO"
+
         let nid = fromCoreNodeId cid
         let chainDB = getChainDB node
         ch <- ChainDB.toChain chainDB
