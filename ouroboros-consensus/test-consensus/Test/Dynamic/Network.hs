@@ -162,14 +162,17 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
         -- allocate the node's internal state and spawn its internal threads
         (node, readNodeInfo, app) <- createNode varRNG coreNodeId registry1
 
+        proxy <- forkLinkedThread registry1 $ testBlockchainTimeDone testBtime
+
         atomically $ modifyTVar nodeVar $ insertNodeInstance joinSlot $
           NodeInstance
             { niApp      = app
             , niKernel   = node
+            , niProxy    = proxy
             , niReadInfo = readNodeInfo
             }
 
-        testBlockchainTimeDone testBtime
+        waitThread proxy
 
       return (coreNodeId, pInfoConfig (pInfo coreNodeId), nodeVar)
 
@@ -390,6 +393,7 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
 data NodeInstance m blk = NodeInstance
   { niApp       :: !(LimitedApp m NodeId blk)
   , niKernel    :: !(NodeKernel m NodeId blk)
+  , niProxy     :: !(Thread m ())
   , niReadInfo  :: !(m (NodeInfo blk MockFS []))
   }
 

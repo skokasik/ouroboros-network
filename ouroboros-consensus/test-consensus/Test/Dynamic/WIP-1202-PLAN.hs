@@ -93,9 +93,18 @@ brings down the whole test.)
 
 As of Issue #1202, node instances will be stopped and restarted/replaced during
 the test, which will also require that the threads for relevant edges be
-similarly cycled. We must connect the two hierarchies.
+similarly cycled. We must connect the two hierarchies somehow.
 
-We will use the @async@ @link@ functionality for this, and the nodes will have
-to terminate exceptionally.
+Before considering how to connect the hierarchies, we'll need a mechanism to
+shutdown a node. We want to retain its data forever for inspection purposes,
+but we do want to stop all of its threads. Currently, nodes allocate their
+threads via a 'ResourceRegistry', and that registry is the only means of
+closing the threads. However, the test infrastructure tracks all nodes' threads
+in the same registry, so closing it to restart a single node is not an option.
+With some additional care (e.g. updating 'BlockchainTime'), we can use a single
+registry per node. Closing that registry will stop the node's internal threads.
+
+To connect the hierarchies, we want the stopping of that node's registry to
+also destroy the mini protocols involving that thread.
 
 -}
