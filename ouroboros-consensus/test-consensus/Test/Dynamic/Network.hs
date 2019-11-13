@@ -27,6 +27,7 @@ module Test.Dynamic.Network (
   , NodeDBs (..)
   ) where
 
+import           Control.Applicative ((<|>))
 import qualified Control.Exception as Exn
 import           Control.Monad
 import           Control.Tracer
@@ -42,6 +43,7 @@ import qualified Data.Set as Set
 import qualified Data.Typeable as Typeable
 import           GHC.Stack
 
+import qualified Control.Monad.Class.MonadAsync as Async
 import           Control.Monad.Class.MonadThrow
 
 import           Network.TypedProtocol.Channel
@@ -138,7 +140,10 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
     -- allocate a variable to collect the node instances for each CoreNodeId
     nodeVars <- fmap Map.fromList $ do
       forM coreNodeIds $ \nid -> (,) nid <$>
-        uncheckedNewTVarM (NodeInstances Map.empty)
+        uncheckedNewTVarM NodeInstances
+          { nisAccessors = Map.empty
+          , nisDown = True
+          }
     let _ = nodeVars :: Map CoreNodeId (StrictTVar m (NodeInstances m blk))
 
     -- spawn threads for each undirected edge
@@ -158,28 +163,47 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
       when tooLate $ do
         error $ "unsatisfiable nodeJoinPlan: " ++ show coreNodeId
 
-      void $ forkLinkedThread registry0 $ withRegistry $ \registry1 -> do
-        -- allocate the node's internal state and spawn its internal threads
-        (node, readNodeInfo, app) <- createNode varRNG coreNodeId registry1
+      -- spawn a thread representing the node in the topology
+      void $ forkLinkedThread registry0 $
+        -- spawn a thread representing the node instance, and respawn one each
+        -- time it fails due to 'StopNodeInstance'
+        --
+        -- We must use a separate thread, because it must terminate
+        -- exceptionally so that the mini protocol threads can be notified via
+        -- @link@.
+        --
+        -- NOTE We do *NOT* link this thread to 'registry0', because we expect
+        -- it to fail.
+        loopOnStopNodeInstance $
+        void $ forkThread registry0 $ withRegistry $ \registry1 -> do
+          -- spawn the node's internal threads
+          (node, readNodeInfo, app, monitorLoop) <-
+            createNode varRNG coreNodeId registry1
 
-        proxy <- forkLinkedThread registry1 $ testBlockchainTimeDone testBtime
+          s <- atomically $ getCurrentSlot btime
 
-        atomically $ modifyTVar nodeVar $ insertNodeInstance joinSlot $
-          NodeInstance
-            { niApp      = app
-            , niKernel   = node
-            , niProxy    = proxy
-            , niReadInfo = readNodeInfo
-            }
+          -- TODO: use the RekeyPlan here instead of these hardwired restarts
+          proxy <- forkLinkedThread registry1 $ do
+            _ <- blockUntilSlot btime (s + SlotNo 20)
 
-        waitThread proxy
+            atomically $ modifyTVar nodeVar downNodeInstances
+            throwM (StopNodeInstance coreNodeId s)
+
+          -- "export" access to this node for use by the mini protocol threads
+          -- and the test framework's inspection
+          atomically $ modifyTVar nodeVar $ insertNodeInstances s $
+            NodeInstance
+              { niApp      = app
+              , niKernel   = node
+              , niProxy    = proxy
+              , niReadInfo = readNodeInfo
+              }
+
+          monitorLoop
 
       return (coreNodeId, pInfoConfig (pInfo coreNodeId), nodeVar)
 
-    -- Wait some extra time after the end of the test block fetch and chain
-    -- sync to finish
-    testBlockchainTimeDone testBtime
-    threadDelay 2000   -- arbitrary "small" duration
+    waitForTest
 
     -- Close the 'ResourceRegistry': this shuts down the background threads of
     -- a node. This is important because we close the ChainDBs in
@@ -190,6 +214,12 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
     getTestOutput nodes
   where
     btime = testBlockchainTime testBtime
+
+    waitForTest = do
+      -- Wait some extra time after the end of the test block fetch and chain
+      -- sync to finish
+      testBlockchainTimeDone testBtime
+      threadDelay 2000   -- arbitrary "small" duration
 
     coreNodeIds :: [CoreNodeId]
     coreNodeIds = enumCoreNodes numCoreNodes
@@ -203,25 +233,30 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
       -> Map CoreNodeId (StrictTVar m (NodeInstances m blk))
       -> (CoreNodeId, CoreNodeId)
       -> m ()
-    undirectedEdge tr nodeVars (node1, node2) = do
-      -- block until both endpoints have joined the network
-      (endpoint1, endpoint2) <- do
-        let get nv = atomically $ do
-              NodeInstances m <- readTVar nv
-              case Map.lookupMax m of
-                Just (_, ni : _) -> pure ni
-                _                -> retry
+    undirectedEdge tr nodeVars (node1, node2) = loopOnStopNodeInstance $ do
+      -- block until both node instances are up
+      (endpoint1, endpoint2) <- atomically $ do
+        let get nv = do
+              NodeInstances{nisAccessors, nisDown} <- readTVar nv
+              case Map.lookupMax nisAccessors of
+                Just (_, ni : _)  | not nisDown -> pure ni
+                _                               -> retry
             lu node = case Map.lookup node nodeVars of
               Nothing -> error $ "node not found: " ++ show node
               Just nv -> (,) node <$> get nv
         (,) <$> lu node1 <*> lu node2
 
-      -- spawn threads for both directed edges
-      void $ withAsyncsWaitAny $
-          directedEdge tr btime endpoint1 endpoint2
-        NE.:|
-        [ directedEdge tr btime endpoint2 endpoint1
-        ]
+      -- tear down the undirected edge if either node instance fails
+      linkThread $ niProxy $ snd endpoint1
+      linkThread $ niProxy $ snd endpoint2
+
+      -- run both directed edges
+      --
+      -- NOTE 'directedEdge' only terminates by exception
+      withAsync (directedEdge tr btime endpoint1 endpoint2) $ \t12 -> do
+        -- this thread fails if either directed edge thread fails
+        link t12
+        directedEdge tr btime endpoint2 endpoint1
 
     -- | Produce transactions every time the slot changes and submit them to
     -- the mempool.
@@ -309,6 +344,7 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
       -> m ( NodeKernel m NodeId blk
            , m (NodeInfo blk MockFS [])
            , LimitedApp m NodeId blk
+           , m ()
            )
     createNode varRNG coreNodeId registry1 = do
       let ProtocolInfo{..} = pInfo coreNodeId
@@ -373,13 +409,19 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
                   protocolCodecsId
                   (protocolHandlers nodeArgs nodeKernel)
 
-      void $ forkLinkedThread registry1 $ do
-        -- TODO We assume this effectively runs before anything else in the
-        -- slot. With such a short transaction (read one TVar) this is likely
-        -- but not necessarily certain.
-        onSlotChange registry1 btime $ \s -> do
-          bno <- atomically $ ChainDB.getTipBlockNo chainDB
-          traceWith (nodeEventsTipBlockNos nodeInfoEvents) (s, bno)
+      let monitorLoop s = do
+            -- TODO We assume this effectively runs before anything else in the
+            -- slot. With such a short transaction (read one TVar) this is likely
+            -- but not necessarily certain.
+            s' <- atomically $ do
+              s' <- getCurrentSlot btime
+              check (s /= s')
+              pure s'
+
+            bno <- atomically $ ChainDB.getTipBlockNo chainDB
+            traceWith (nodeEventsTipBlockNos nodeInfoEvents) (s', bno)
+
+            monitorLoop s'
 
       void $ forkLinkedThread registry1 $ txProducer
         pInfoConfig
@@ -388,7 +430,8 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
         (ChainDB.getCurrentLedger chainDB)
         (getMempool nodeKernel)
 
-      return (nodeKernel, readNodeInfo, LimitedApp app)
+      s0 <- atomically $ getCurrentSlot btime
+      return (nodeKernel, readNodeInfo, LimitedApp app, monitorLoop s0)
 
 data NodeInstance m blk = NodeInstance
   { niApp       :: !(LimitedApp m NodeId blk)
@@ -397,11 +440,50 @@ data NodeInstance m blk = NodeInstance
   , niReadInfo  :: !(m (NodeInfo blk MockFS []))
   }
 
-newtype NodeInstances m blk = NodeInstances (Map SlotNo [NodeInstance m blk])
+data NodeInstances m blk = NodeInstances
+  { nisAccessors :: !(Map SlotNo [NodeInstance m blk])
+  , nisDown      :: !Bool
+  }
 
-insertNodeInstance :: SlotNo -> NodeInstance m blk -> NodeInstances m blk -> NodeInstances m blk
-insertNodeInstance s ni (NodeInstances m) =
-    NodeInstances $ Map.alter (Just . (ni :) . fromMaybe []) s m
+insertNodeInstances ::
+     SlotNo -> NodeInstance m blk -> NodeInstances m blk -> NodeInstances m blk
+insertNodeInstances s ni nis = nis
+  { nisAccessors =
+      Map.alter (Just . (ni :) . fromMaybe []) s (nisAccessors nis)
+  , nisDown      = False
+  }
+
+downNodeInstances :: NodeInstances m blk -> NodeInstances m blk
+downNodeInstances nis = nis{nisDown = True}
+
+data StopNodeInstance = StopNodeInstance CoreNodeId SlotNo
+  deriving (Show)
+
+instance Exception StopNodeInstance
+
+data NodeInstanceContinuation a
+  = NodeInstanceAgain
+  | NodeInstanceDone a
+  | NodeInstanceRethrow SomeException
+  deriving (Show)
+
+loopOnStopNodeInstance :: forall m a. (MonadCatch m, Show a) => m a -> m a
+loopOnStopNodeInstance m =
+    catch (NodeInstanceDone <$> m) handler >>= \case
+      NodeInstanceAgain     -> loopOnStopNodeInstance m
+      NodeInstanceDone a    -> pure a
+      NodeInstanceRethrow e -> throwM e
+  where
+    handler :: SomeException -> m (NodeInstanceContinuation a)
+    handler e = pure $ fromMaybe (NodeInstanceRethrow e) (h e)
+
+    h :: SomeException -> Maybe (NodeInstanceContinuation a)
+    h e = (hStopping <$> fromException e)
+      <|> (hLinked   =<< fromException e)
+
+    hLinked (Async.ExceptionInLinkedThread _ e) = h e
+
+    hStopping StopNodeInstance{} = NodeInstanceAgain
 
 {-------------------------------------------------------------------------------
   Running the Mini Protocols on an Ordered Pair of Nodes
@@ -437,30 +519,37 @@ directedEdge ::
 directedEdge tr btime nodeapp1 nodeapp2 =
     loopOnMPEE
   where
-    loopOnMPEE =
-        directedEdgeInner nodeapp1 nodeapp2
-          `catch` hExpected
-          `catch` hUnexpected
+    loopOnMPEE = do
+         again <- (False <$ directedEdgeInner nodeapp1 nodeapp2)
+             `catch` handler
+         when again loopOnMPEE
       where
+        handler e
+          | Just m <- hExpected <$> fromException e = m
+          | Just m <- hAsync    <$> fromException e = m
+          | otherwise                               = hUnexpected e
+
         -- Catch and restart on expected exceptions
         --
-        hExpected :: MiniProtocolExpectedException blk -> m ()
+        hExpected :: MiniProtocolExpectedException blk -> m Bool
         hExpected e = do
           s@(SlotNo i) <- atomically $ getCurrentSlot btime
           traceWith tr (s, MiniProtocolDelayed, e)
           void $ blockUntilSlot btime $ SlotNo (succ i)
           traceWith tr (s, MiniProtocolRestarting, e)
-          loopOnMPEE
+          pure True
+
+        hAsync :: Exn.SomeAsyncException -> m a
+        hAsync = throwM
 
         -- Wrap synchronous exceptions in 'MiniProtocolFatalException'
         --
-        hUnexpected :: SomeException -> m ()
-        hUnexpected e@(Exn.SomeException e') = case fromException e of
-          Just (_ :: Exn.AsyncException) -> throwM e
-          Nothing                        -> throwM MiniProtocolFatalException
-            { mpfeType = Typeable.typeOf e'
-            , mpfeExn = e
-            }
+        hUnexpected :: SomeException -> m a
+        hUnexpected e@(Exn.SomeException e') =
+            throwM MiniProtocolFatalException
+                { mpfeType = Typeable.typeOf e'
+                , mpfeExn = e
+                }
 
 -- | Spawn threads for all of the mini protocols
 --
@@ -473,8 +562,8 @@ directedEdgeInner ::
      -- ^ server threads on this node
   -> m ()
 directedEdgeInner
-  (node1, NodeInstance{niApp = LimitedApp app1, niProxy = prx1})
-  (node2, NodeInstance{niApp = LimitedApp app2, niProxy = prx2}) = do
+  (node1, NodeInstance{niApp = LimitedApp app1})
+  (node2, NodeInstance{niApp = LimitedApp app2}) = do
     void $ (>>= withAsyncsWaitAny) $
       fmap flattenPairs $
       sequence $
@@ -512,8 +601,8 @@ directedEdgeInner
         -- running "on a node" means being links to its internal threads;
         -- whatever stopped them should also stop you
        pure
-         ( do linkThread prx1; client app1 (fromCoreNodeId node2) chan
-         , do linkThread prx2; server app2 (fromCoreNodeId node1) dualChan
+         ( client app1 (fromCoreNodeId node2) chan
+         , server app2 (fromCoreNodeId node1) dualChan
          )
 
     wrapMPEE ::
@@ -627,8 +716,8 @@ getTestOutput ::
 getTestOutput nodes = do
     (nodeOutputs', tipBlockNos') <- fmap unzip $ forM nodes $
       \(cid, cfg, nodeVar) -> do
-        NodeInstances nis <- atomically $ readTVar nodeVar
-        (node, readNodeInfo) <- case Map.lookupMax nis of
+        NodeInstances{nisAccessors} <- atomically $ readTVar nodeVar
+        (node, readNodeInfo) <- case Map.lookupMax nisAccessors of
           Just (_, NodeInstance{niKernel, niReadInfo} : _) ->
             pure (niKernel, niReadInfo)
           _ -> error "TODO"
