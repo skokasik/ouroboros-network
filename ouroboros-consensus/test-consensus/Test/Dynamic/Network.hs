@@ -164,42 +164,48 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
         error $ "unsatisfiable nodeJoinPlan: " ++ show coreNodeId
 
       -- spawn a thread representing the node in the topology
-      void $ forkLinkedThread registry0 $
+      void $ forkLinkedThread registry0 $ do
+        -- allocate state variables specific to this node in the topology, to
+        -- be reused by every instance of it
+        (nodeInfo, readNodeInfo) <- newNodeInfo
+
         -- spawn a thread representing the node instance, and respawn one each
         -- time it fails due to 'StopNodeInstance'
         --
         -- We must use a separate thread, because it must terminate
-        -- exceptionally so that the mini protocol threads can be notified via
-        -- @link@.
+        -- exceptionally and via @link@ notify the corresponding mini protocol
+        -- threads
         --
         -- NOTE We do *NOT* link this thread to 'registry0', because we expect
         -- it to fail.
-        loopOnStopNodeInstance $
-        void $ forkThread registry0 $ withRegistry $ \registry1 -> do
-          -- spawn the node's internal threads
-          (node, readNodeInfo, app, monitorLoop) <-
-            createNode varRNG coreNodeId registry1
+        loopOnStopNodeInstance ("NODE " <> show coreNodeId) $ do
+          void $ (>>= waitThread) $ forkThread registry0 $ withRegistry $ \registry1 -> do
+            -- spawn the node's internal threads
+            (node, app, monitorLoop) <-
+              createNode varRNG coreNodeId nodeInfo registry1
 
-          s <- atomically $ getCurrentSlot btime
+            s <- atomically $ getCurrentSlot btime
+            traceWith debugTracer $ "Instantiated " <> show (coreNodeId, s)
 
-          -- TODO: use the RekeyPlan here instead of these hardwired restarts
-          proxy <- forkLinkedThread registry1 $ do
-            _ <- blockUntilSlot btime (s + SlotNo 20)
+            -- TODO: use the RekeyPlan here instead of these hardwired restarts
+            proxy <- forkLinkedThread registry1 $ do
+              _ <- blockUntilSlot btime (s + SlotNo 2)
 
-            atomically $ modifyTVar nodeVar downNodeInstances
-            throwM (StopNodeInstance coreNodeId s)
+              atomically $ modifyTVar nodeVar downNodeInstances
+              traceWith debugTracer $ show $ StopNodeInstance coreNodeId s
+              throwM $ StopNodeInstance coreNodeId s
 
-          -- "export" access to this node for use by the mini protocol threads
-          -- and the test framework's inspection
-          atomically $ modifyTVar nodeVar $ insertNodeInstances s $
-            NodeInstance
-              { niApp      = app
-              , niKernel   = node
-              , niProxy    = proxy
-              , niReadInfo = readNodeInfo
-              }
+            -- "export" access to this node for use by the mini protocol threads
+            -- and the test framework's inspection
+            atomically $ modifyTVar nodeVar $ insertNodeInstances s $
+              NodeInstance
+                { niApp      = app
+                , niKernel   = node
+                , niProxy    = proxy
+                , niReadInfo = readNodeInfo
+                }
 
-          monitorLoop
+            monitorLoop
 
       return (coreNodeId, pInfoConfig (pInfo coreNodeId), nodeVar)
 
@@ -233,7 +239,7 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
       -> Map CoreNodeId (StrictTVar m (NodeInstances m blk))
       -> (CoreNodeId, CoreNodeId)
       -> m ()
-    undirectedEdge tr nodeVars (node1, node2) = loopOnStopNodeInstance $ do
+    undirectedEdge tr nodeVars (node1, node2) = loopOnStopNodeInstance ("EDGE " <> show (node1, node2)) $ do
       -- block until both node instances are up
       (endpoint1, endpoint2) <- atomically $ do
         let get nv = do
@@ -340,13 +346,13 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
       :: HasCallStack
       => StrictTVar m ChaChaDRG
       -> CoreNodeId
+      -> NodeInfo blk (StrictTVar m MockFS) (Tracer m)
       -> ResourceRegistry m
       -> m ( NodeKernel m NodeId blk
-           , m (NodeInfo blk MockFS [])
            , LimitedApp m NodeId blk
            , m ()
            )
-    createNode varRNG coreNodeId registry1 = do
+    createNode varRNG coreNodeId nodeInfo registry1 = do
       let ProtocolInfo{..} = pInfo coreNodeId
 
       let callbacks :: NodeCallbacks m blk
@@ -368,7 +374,6 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
             , produceDRG      = atomically $ simChaChaT varRNG id $ drgNew
             }
 
-      (nodeInfo, readNodeInfo) <- newNodeInfo
       let NodeInfo
             { nodeInfoEvents
             , nodeInfoDBs
@@ -405,7 +410,7 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
       nodeKernel <- initNodeKernel nodeArgs
       let app = consensusNetworkApps
                   nodeKernel
-                  nullDebugProtocolTracers
+                  nullDebugProtocolTracers{ptTxSubmissionTracer = nullTracer}
                   protocolCodecsId
                   (protocolHandlers nodeArgs nodeKernel)
 
@@ -431,7 +436,7 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
         (getMempool nodeKernel)
 
       s0 <- atomically $ getCurrentSlot btime
-      return (nodeKernel, readNodeInfo, LimitedApp app, monitorLoop s0)
+      return (nodeKernel, LimitedApp app, monitorLoop s0)
 
 data NodeInstance m blk = NodeInstance
   { niApp       :: !(LimitedApp m NodeId blk)
@@ -467,10 +472,12 @@ data NodeInstanceContinuation a
   | NodeInstanceRethrow SomeException
   deriving (Show)
 
-loopOnStopNodeInstance :: forall m a. (MonadCatch m, Show a) => m a -> m a
-loopOnStopNodeInstance m =
-    catch (NodeInstanceDone <$> m) handler >>= \case
-      NodeInstanceAgain     -> loopOnStopNodeInstance m
+loopOnStopNodeInstance :: forall m a. (MonadCatch m, Show a) => String -> m a -> m a
+loopOnStopNodeInstance s m = do
+    x <- catch (NodeInstanceDone <$> m) handler
+    traceWith debugTracer (s <> " " <> show x)
+    case x of
+      NodeInstanceAgain     -> loopOnStopNodeInstance s m
       NodeInstanceDone a    -> pure a
       NodeInstanceRethrow e -> throwM e
   where
@@ -785,7 +792,7 @@ nullDebugProtocolTracers ::
      )
   => ProtocolTracers m peer blk failure
 nullDebugProtocolTracers =
-  nullProtocolTracers `asTypeOf` showProtocolTracers debugTracer
+  flip asTypeOf nullProtocolTracers $ showProtocolTracers debugTracer
 
 -- These constraints are when using @showTracer(s) debugTracer@ instead of
 -- @nullTracer(s)@.
