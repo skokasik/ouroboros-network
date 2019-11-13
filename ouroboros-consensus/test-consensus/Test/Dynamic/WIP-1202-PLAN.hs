@@ -82,6 +82,11 @@ instance before altering the intended delegation map.
   node's ledger. (A simpler and more artificial alternative would instead
   initially generate that transaction simultaneously in every node's mempool.)
 
+Future Work:
+
+  * One possible adversial behavior is for a new node to join the network with
+    the same operational key as another.
+
 Implementation Details:
 
 The test infrastructure prior to Issue #1202 maintains two relatively flat
