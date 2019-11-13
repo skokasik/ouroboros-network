@@ -69,7 +69,8 @@ instance before altering the intended delegation map.
 * We would then update the intended delegate map.
 
 * We would then either restart the node or replace it with a new one; either
-  way, the resulting node is (newly) configured to use @ok2@.
+  way, the resulting node is (newly) configured to use @ok2@. (Restarting
+  retains the file system, replacing does not.)
 
 * We would generate the @gk := ok2@ delegate certificate transaction in the new
   node's memory pool. The new node cannot forge blocks until that transaction
