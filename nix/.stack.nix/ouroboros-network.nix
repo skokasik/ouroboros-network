@@ -118,6 +118,7 @@
             (hsPkgs.ouroboros-network-testing)
             (hsPkgs.pipes)
             (hsPkgs.process)
+            (hsPkgs.psqueues)
             (hsPkgs.QuickCheck)
             (hsPkgs.serialise)
             (hsPkgs.splitmix)
