@@ -122,12 +122,115 @@ closing the threads. However, the test infrastructure tracks all nodes' threads
 in the same registry, so closing it to restart a single node is not an option.
 With some additional care (e.g. paramterizing 'BlockchainTime' over the
 'ResourceRegistry'), we can use a single registry per node. Closing that
-registry will stop the node's internal threads, and only those threads.
+registry will stop the node's internal threads and only those threads.
 
-To connect the hierarchies, we want the stopping of that node's registry to
-also destroy the mini protocols involving that thread. We use the @async@
-@link@ functionality to do this reliably. This involves, for each node
-instance, a thread that is planned to fail so that linked threads will be
-canceled "automatically".
+To connect the hierarchies, we want the restarting of a node instance to also
+restart the relevant mini protocol instances. We use the following scheme.
+
+  * The main test infrastructure thread spawns a thread for each vertex in the
+    topology and a thread for each undirected edge in the topology. These
+    threads do not terminate until the whole test terminates. Vertex threads
+    emulate node operators, and undirected edge threads emulate the two
+    vertices' cooperative connection management (abstracting away connects,
+    disconnects, etc).
+
+  * Each vertex thread allocates the resources that will persist across node
+    restarts (e.g. the filesystem) and then spawns and @wait@s on a thread
+    running a node instance.
+
+  * Each node instance thread initializes and runs a node that uses the
+    vertex's persistent resources (e.g. the filesystem). It also inserts the
+    node's accessors into a shared variable so that the relevant undirected
+    edge threads see that it is up and how to interact with it.
+
+  * If and when the test configuration schedules for it do to so, a node
+    instance thread will update the shared variable to indicate it is down,
+    close its ChainDB, and raise a StopNodeInstance exception.
+
+  * If the node instance thread raises a StopNodeInstance exception, then the
+    vertex thread will replace it with a fresh node instance thread.
+
+  * Each undirected edge thread blocks until its two node instances are
+    simultaneously up, then @link@s to the two node instance threads, then
+    spawns one thread for each of the two directed edges, and then @wait@s for
+    either to terminate.
+
+  * The undirected edge thread handles StopNodeInstance exceptions by looping.
+
+  * Each directed edge thread spawns multiple threads, one for each mini
+    protocol instance in the client-server pair, and then @wait@s for any to
+    terminate (they currently only terminate by exception -- for example,
+    ChainSync never sends the Done message).
+
+  * The directed edge thread handles \"expected\" exceptions (e.g. ForkTooDeep)
+    by blocking until the next slot onset and then looping.
+
+  * Finally, the vertex thread and the undirect edge thread both re-interpret
+    specific exceptions as StopNodeInstance exceptions if the relevant node
+    instance is already down when they handle the exception. They similarly
+    ignore ExceptionInLinkedThread wrappers. The re-interpretation is necessary
+    because when the node instance thread raises a StopNodeInstance, its
+    internal threads or clean-up actions may in turn raise a different
+    exception, for example due to the node's ChainDB already being closed. If
+    these were not reinterpreted, then the vertex thread would not restart the
+    node instance. The mini protocol threads can similarly raise an exception
+    during the node restart (e.g. once it closes its ChainDB) that may prevent
+    the crucial StopNodeInstance exception from reaching the undirected edge
+    thread.
+
+  * Those threads might re-interpret an exception that only coincides with a
+    node restart by chance. We consider that acceptable because the generator
+    for test configuration plans should be able to trigger that same exact
+    exception without a coincident node restart.
+
+The following diagram illustrates the above scheme for the simplest topology:
+two connected nodes.
+
+  * This diagram is a snapshot of the threads in a respective steady-state: all
+    are up, connected, and running.
+
+  * It does not show the per-vertex shared variable that is updated by the
+    vertex and read by its undirected edges.
+
+  * It depicts the node instance threads and mini protocol threads as leaves
+    even though they have resources and/or children of their own, because their
+    internals are only relevant to the illustrated scheme as a source of
+    exceptions.
+
+  * Each point is a thread; upper-case threads only terminate once during the
+    test.
+
+  * Each path along @-@ and @|@ is a parent-child thread relationship, in which
+    the child cannot outlive the parent and the child terminating via exception
+    reraises it in the parent.
+
+  * Each @>>>>>>@ is a @link@ relationship that forwards exceptions in the
+    indicated direction. Note that this is weaker than a parent-child
+    relationship.
+
+  * Each @..@ is the channel over which two paired mini protocol threads
+    exchange messages; it is a resource managed by the directed edge thread.
+
+  * A @!@ indicates that the thread handles some exceptions by destroying and
+    recreating all of its children and most if not all of its resources.
+
+@
+                  V!               V!
+                  |                 |
+                  ni>>>>>>UE!<<<<<<ni
+                           |
+             -------------------------------
+            |                               |
+           de!                             de!
+            |                               |
+  ----------------------         ----------------------
+ |    |   |    |   |    |       |    |   |    |   |    |
+cCS..sCS cBF..sBF cTX..sTX     cCS..sCS cBF..sBF cTX..sTX
+@
+
+Issue #1202 introduces the vertex threads (@V@), undirected edge threads
+(@UE@), and the explicit links (@>>>@). These were previously unnecessary,
+since the node instance threads (@ni@) and so the directed edge threads (@de@)
+only terminated at the end of the test (thus they were denoted @NI@ and @DE@).
 
 -}

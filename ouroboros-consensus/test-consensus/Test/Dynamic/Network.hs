@@ -160,10 +160,10 @@ runNodeNetwork registry0 testBtime numCoreNodes nodeJoinPlan nodeTopology
       when tooLate $ do
         error $ "unsatisfiable nodeJoinPlan: " ++ show coreNodeId
 
-      -- spawn a thread representing the node in the topology
+      -- spawn a thread representing the vertex in the topology
       void $ forkLinkedThread registry0 $ do
-        -- allocate state variables specific to this node in the topology, to
-        -- be reused by every instance of it
+        -- allocate state variables specific to this vertex in the topology, to
+        -- be reused by every node instance of it
         (nodeInfo, readNodeInfo) <- newNodeInfo
 
         -- spawn a thread representing the node instance, and respawn one each
