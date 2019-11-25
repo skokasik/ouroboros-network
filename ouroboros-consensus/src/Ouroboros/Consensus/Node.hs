@@ -262,19 +262,20 @@ mkNodeArgs
 mkNodeArgs registry cfg initState tracers btime chainDB isProducer = NodeArgs
     { tracers
     , registry
-    , maxClockSkew       = ClockSkew 1
+    , maxClockSkew            = ClockSkew 1
     , cfg
     , initState
     , btime
     , chainDB
-    , initChainDB         = nodeInitChainDB
+    , initChainDB             = nodeInitChainDB
     , blockProduction
-    , blockFetchSize      = nodeBlockFetchSize
-    , blockMatchesHeader  = nodeBlockMatchesHeader
-    , maxUnackTxs         = 100 -- TODO
-    , maxBlockSize        = NoOverride
-    , mempoolCap          = NoMempoolCapacityBytesOverride
-    , chainSyncPipelining = pipelineDecisionLowHighMark 200 300 -- TODO
+    , blockFetchSize          = nodeBlockFetchSize
+    , blockMatchesHeader      = nodeBlockMatchesHeader
+    , recentTxIdsExpiryThresh = Time (secondsToDiffTime 3600)
+    , maxUnackTxs             = 100 -- TODO
+    , maxBlockSize            = NoOverride
+    , mempoolCap              = NoMempoolCapacityBytesOverride
+    , chainSyncPipelining     = pipelineDecisionLowHighMark 200 300 -- TODO
     }
   where
     blockProduction = case isProducer of

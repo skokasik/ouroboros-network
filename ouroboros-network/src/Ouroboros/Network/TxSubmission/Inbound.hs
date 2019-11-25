@@ -3,7 +3,6 @@
 {-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE NamedFieldPuns      #-}
-{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE BangPatterns        #-}
 
 module Ouroboros.Network.TxSubmission.Inbound (
@@ -23,14 +22,21 @@ import           Data.Sequence.Strict (StrictSeq)
 import           Data.Foldable (foldl')
 
 import           Control.Monad (unless)
-import           Control.Monad.Class.MonadSTM
+import           Control.Monad.Class.MonadSTM hiding (modifyTVar, readTVar)
+import           Control.Monad.Class.MonadSTM.Strict (StrictTVar, modifyTVar,
+                     readTVar)
 import           Control.Monad.Class.MonadThrow
+import           Control.Monad.Class.MonadTime (MonadTime (..), Time (..),
+                     addTime)
 import           Control.Exception (assert)
 import           Control.Tracer (Tracer)
 
 import           Network.TypedProtocol.Pipelined (N, Nat(..))
 
 import           Ouroboros.Network.Protocol.TxSubmission.Server
+import qualified Ouroboros.Network.RecentTxIds as RecentTxIds (insertTxIds,
+                     intersection)
+import           Ouroboros.Network.RecentTxIds (RecentTxIds)
 
 
 
@@ -98,6 +104,33 @@ data ServerState txid tx = ServerState {
        -- transactions out of order but must use the original order when adding
        -- to the mempool or acknowledging transactions.
        --
+       -- However, it's worth noting that, in a few situations, some of the
+       -- transaction IDs in this 'Map' may be mapped to 'Nothing':
+       --
+       -- * Transaction IDs mapped to 'Nothing' can represent transaction IDs
+       --   that were requested, but not received. This can occur because the
+       --   client will not necessarily send all of the transactions that we
+       --   asked for, but we still need to acknowledge those transactions.
+       --
+       --   For example, if we request a transaction that no longer exists in
+       --   the client's mempool, the client will just exclude it from the
+       --   response. However, we still need to acknowledge it (i.e. remove it
+       --   from the 'unacknowledgedTxIds') in order to note that we're no
+       --   longer awaiting receipt of that transaction.
+       --
+       -- * Transaction IDs mapped to 'Nothing' can represent transactions
+       --   that were not requested from the client because they've already
+       --   been recently processed and added to the mempool by the
+       --   transaction submission server.
+       --
+       --   For example, if we request some transaction IDs and notice that
+       --   some subset of them have already been recently added to the
+       --   mempool by the tx submission server, we wouldn't want to bother
+       --   asking for those specific transactions. Therefore, we would just
+       --   insert those transaction IDs mapped to 'Nothing' to the
+       --   'bufferedTxs' such that those transactions are acknowledged, but
+       --   never actually requested.
+       --
        bufferedTxs         :: Map txid (Maybe tx),
 
        -- | The number of transactions we can acknowledge on our next request
@@ -114,12 +147,19 @@ initialServerState = ServerState 0 Seq.empty Map.empty Map.empty 0
 
 txSubmissionInbound
   :: forall txid tx idx m.
-     (Ord txid, Ord idx, MonadSTM m, MonadThrow m)
+     (Ord txid, Ord idx, MonadSTM m, MonadThrow m, MonadTime m)
   => Tracer m (TraceTxSubmissionInbound txid tx)
-  -> Word16         -- ^ Maximum number of unacknowledged txids allowed
+  -> Word16
+  -- ^ Maximum number of unacknowledged txids allowed
+  -> Time
+  -- ^ The threshold at which transaction IDs in the 'RecentTxIds' should
+  -- expire.
+  -> StrictTVar m (RecentTxIds txid)
+  -- ^ A collection of transaction IDs that we've most recently added to the
+  -- mempool from instances of the transaction submission server.
   -> TxSubmissionMempoolWriter txid tx idx m
   -> TxSubmissionServerPipelined txid tx m ()
-txSubmissionInbound _tracer maxUnacked TxSubmissionMempoolWriter{..} =
+txSubmissionInbound _tracer maxUnacked txIdExpThresh recentTxIdsVar mpWriter =
     TxSubmissionServerPipelined (serverIdle Zero initialServerState)
   where
     --TODO: replace these fixed limits by policies based on TxSizeInBytes
@@ -128,15 +168,24 @@ txSubmissionInbound _tracer maxUnacked TxSubmissionMempoolWriter{..} =
     maxTxIdsToRequest = 3 :: Word16
     maxTxToRequest    = 2 :: Word16
 
+    TxSubmissionMempoolWriter
+      { txId
+      , mempoolAddTxs
+      } = mpWriter
+
     serverIdle :: forall (n :: N).
                   Nat n
                -> ServerState txid tx
-               -> ServerStIdle n txid tx m ()
+               -> m (ServerStIdle n txid tx m ())
     serverIdle Zero st
         -- There are no replies in flight, but we do know some more txs we can
         -- ask for, so lets ask for them and more txids.
       | canRequestMoreTxs st
-      = serverReqTxs Zero st
+      = do
+        serverReqTxsRes <-serverReqTxs Zero st
+        case serverReqTxsRes of
+          Left st'  -> serverIdle Zero st'
+          Right res -> pure res
 
         -- There's no replies in flight, and we have no more txs we can ask for
         -- so the only remaining thing to do is to ask for more txids. Since
@@ -147,6 +196,7 @@ txSubmissionInbound _tracer maxUnacked TxSubmissionMempoolWriter{..} =
              && Seq.null (unacknowledgedTxIds st)
              && Map.null (availableTxids st)
              && Map.null (bufferedTxs st)) $
+        pure $
         SendMsgRequestTxIdsBlocking
           (numTxsToAcknowledge st)
           numTxIdsToRequest
@@ -172,14 +222,22 @@ txSubmissionInbound _tracer maxUnacked TxSubmissionMempoolWriter{..} =
         -- a busy-polling loop.
         --
       | canRequestMoreTxs st
-      = CollectPipelined
-          (Just (serverReqTxs (Succ n) st))
-          (handleReply n st)
+      = do
+        serverReqTxsRes <- serverReqTxs (Succ n) st
+        case serverReqTxsRes of
+          Left st' ->
+            pure $ CollectPipelined
+              Nothing
+              (handleReply n st')
+          Right res ->
+            pure $ CollectPipelined
+              (Just res)
+              (handleReply n st)
 
         -- In this case there is nothing else to do so we block until we
         -- collect a reply.
       | otherwise
-      = CollectPipelined
+      = pure $ CollectPipelined
           Nothing
           (handleReply n st)
 
@@ -195,7 +253,7 @@ txSubmissionInbound _tracer maxUnacked TxSubmissionMempoolWriter{..} =
     handleReply n st (CollectTxIds reqNo txids) =
       -- Upon receiving a batch of new txids we extend our available set,
       -- and extended the unacknowledged sequence.
-      return $ serverIdle n st {
+      serverIdle n st {
         requestedTxIdsInFlight = requestedTxIdsInFlight st - reqNo,
         unacknowledgedTxIds    = unacknowledgedTxIds st
                               <> Seq.fromList (map fst txids),
@@ -250,9 +308,17 @@ txSubmissionInbound _tracer maxUnacked TxSubmissionMempoolWriter{..} =
           bufferedTxs'' = foldl' (flip Map.delete)
                                  bufferedTxs' acknowledgedTxIds
 
-      _ <- mempoolAddTxs txsReady
+      addedTxIds <- mempoolAddTxs txsReady
 
-      return $ serverIdle n st {
+      -- Insert the transactions that were added to the mempool into the
+      -- 'RecentTxIds'.
+      let Time expThreshDiffTime = txIdExpThresh
+      currTime <- getMonotonicTime
+      atomically $ modifyTVar
+        recentTxIdsVar
+        (RecentTxIds.insertTxIds addedTxIds (expThreshDiffTime `addTime` currTime))
+
+      serverIdle n st {
         bufferedTxs         = bufferedTxs'',
         unacknowledgedTxIds = unacknowledgedTxIds',
         numTxsToAcknowledge = numTxsToAcknowledge st
@@ -260,39 +326,120 @@ txSubmissionInbound _tracer maxUnacked TxSubmissionMempoolWriter{..} =
       }
 
 
+    -- Attempt to request transactions in a pipelined fashion.
+    --
+    -- Before requesting the corresponding transactions for transaction IDs
+    -- that we've received from the client, we first check the 'RecentTxIds'
+    -- data structure in order to determine whether we've already recently
+    -- requested and added those transactions to the mempool. This enables us
+    -- to only request transactions that we haven't encountered recently.
+    --
+    -- For those transaction IDs that already exist within 'RecentTxIds', we
+    -- pre-emptively acknowledge them and exclude them from our request for
+    -- transactions.
+    --
+    -- If this function returns 'Right', this indicates that we were able to
+    -- make a pipelined request for transactions.
+    --
+    -- If this function returns 'Left', this indicates that there were no
+    -- remaining transactions that could be requested after acknowledging
+    -- transaction IDs that already exist within 'RecentTxIds'. This can occur
+    -- in the event that all of the 'unacknowledgedTxIds' already exist within
+    -- the 'RecentTxIds' structure. In this case, we would pre-emptively
+    -- acknowledge all of the 'unacknowledgedTxIds' and no longer have any
+    -- transactions to request. Therefore, we just return the updated
+    -- 'ServerState' and the caller should decide how to proceed based on this
+    -- result.
+    --
     serverReqTxs :: forall (n :: N).
                     Nat n
                  -> ServerState txid tx
-                 -> ServerStIdle n txid tx m ()
-    serverReqTxs n st =
-        SendMsgRequestTxsPipelined
-          (Map.keys txsToRequest)
-          (pure $ serverReqTxIds (Succ n) st {
-                    availableTxids = availableTxids'
-                  })
-      where
-        -- TODO: This implementation is deliberately naive, we pick in an
-        -- arbitrary order and up to a fixed limit. This is to illustrate
-        -- that we can request txs out of order. In the final version we will
-        -- try to pick in-order and only pick out of order when we have to.
-        -- We will also uses the size of txs in bytes as our limit for
-        -- upper and lower watermarks for pipelining. We'll also use the
-        -- amount in flight and delta-Q to estimate when we're in danger of
-        -- becomming idle, and need to request stalled txs.
-        --
-        (txsToRequest, availableTxids') =
-          Map.splitAt (fromIntegral maxTxToRequest) (availableTxids st)
+                 -> m ( Either
+                          (ServerState txid tx)
+                          -- The updated server state returned in the event
+                          -- that we were unable to request transactions after
+                          -- acknowledging those that already exist in the
+                          -- mempool.
+                          (ServerStIdle n txid tx m ())
+                          -- A pipelined request for transactions.
+                      )
+    serverReqTxs n st = do
+        -- We can pick txs out of order if we want to, and we can decide not
+        -- to pick some txs at all (if for example we have seen them already).
+        -- We don't have to pick them all in one go, we can stick to a limit
+        -- like maxTxToRequest.
+
+        recentTxIds <- atomically $ readTVar recentTxIdsVar
+
+            -- Potential transactions to request now and ones to keep to
+            -- consider later.
+        let (potentialTxsToRequest, availableTxids') =
+              Map.splitAt (fromIntegral maxTxToRequest) (availableTxids st)
+
+            -- Transactions to not request at all because we've already
+            -- recently added them to the mempool.
+            txsToIgnore = Set.fromList $
+              RecentTxIds.intersection (Map.keys potentialTxsToRequest) recentTxIds
+
+            -- Transactions to request now.
+            txsToRequest = Map.withoutKeys potentialTxsToRequest txsToIgnore
+
+            -- We still have to acknowledge the txids we were given. For txs
+            -- we do ask for, we'll deal with acknowledgement after we have
+            -- receive the reply, but for ones we now decide do not to ask for
+            -- we have to arrange for their acknowledgement now.
+            --
+            -- So we extended bufferedTxs with those txs we'll not be requesting
+            -- (so of course they have no corresponding reply).
+            --
+            bufferedTxs' = bufferedTxs st
+                        <> Map.fromSet (const Nothing) txsToIgnore
+
+            -- Check if having decided not to request more txs we can now confirm
+            -- any txids (in strict order in the unacknowledgedTxIds sequence).
+            -- This is used in the 'numTxsToAcknowledge' below which will then
+            -- be used next time we SendMsgRequestTxIds.
+            --
+            (acknowledgedTxIds, unacknowledgedTxIds') =
+              Seq.spanl (`Map.member` bufferedTxs') (unacknowledgedTxIds st)
+
+            -- If so we can remove acknowledged txs from our buffer
+            --
+            bufferedTxs'' = foldl' (flip Map.delete)
+                                   bufferedTxs' acknowledgedTxIds
+
+            -- The next 'ServerState'
+            st' = st {
+                availableTxids      = availableTxids',
+                bufferedTxs         = bufferedTxs'',
+                unacknowledgedTxIds = unacknowledgedTxIds',
+                numTxsToAcknowledge = numTxsToAcknowledge st
+                                    + fromIntegral (Seq.length acknowledgedTxIds)
+              }
+
+        if (not $ null unacknowledgedTxIds')
+          then
+            pure $ Right $ SendMsgRequestTxsPipelined
+              (Map.keys txsToRequest)
+              (serverReqTxIds (Succ n) st')
+          else
+            -- There are no transactions that can be requested.
+            -- Return the updated 'ServerState' and allow the caller to decide
+            -- how to proceed.
+            assert (null txsToRequest) $
+            pure $ Left st'
+
 
     serverReqTxIds :: forall (n :: N).
                       Nat n
                    -> ServerState txid tx
-                   -> ServerStIdle n txid tx m ()
+                   -> m (ServerStIdle n txid tx m ())
     serverReqTxIds n st
       | numTxIdsToRequest > 0
-      = SendMsgRequestTxIdsPipelined
+      = pure $ SendMsgRequestTxIdsPipelined
           (numTxsToAcknowledge st)
           numTxIdsToRequest
-          (do pure $ serverIdle (Succ n) st {
+          (serverIdle (Succ n) st {
                 requestedTxIdsInFlight = requestedTxIdsInFlight st
                                        + numTxIdsToRequest,
                 numTxsToAcknowledge    = 0

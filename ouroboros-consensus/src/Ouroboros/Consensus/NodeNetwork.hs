@@ -148,8 +148,8 @@ protocolHandlers
     => NodeArgs   m peer blk  --TODO eliminate, merge relevant into NodeKernel
     -> NodeKernel m peer blk
     -> ProtocolHandlers m peer blk
-protocolHandlers NodeArgs {btime, maxClockSkew, tracers, maxUnackTxs, chainSyncPipelining}
-                 NodeKernel {getChainDB, getMempool, getNodeConfig} =
+protocolHandlers NodeArgs {btime, maxClockSkew, tracers, recentTxIdsExpiryThresh, maxUnackTxs, chainSyncPipelining}
+                 NodeKernel {getChainDB, getMempool, getNodeConfig, getRecentTxIds} =
     --TODO: bundle needed NodeArgs into the NodeKernel
     -- so we do not have to pass it separately
     --TODO: need to review the use of the peer id in the tracers.
@@ -181,6 +181,8 @@ protocolHandlers NodeArgs {btime, maxClockSkew, tracers, maxUnackTxs, chainSyncP
         txSubmissionInbound
           (txInboundTracer tracers)
           maxUnackTxs
+          recentTxIdsExpiryThresh
+          getRecentTxIds
           (getMempoolWriter getMempool)
 
     , phLocalChainSyncServer =
