@@ -28,13 +28,12 @@ import qualified Data.List.NonEmpty as NE
 import           Data.Maybe (catMaybes)
 import           Data.Semigroup (Last (..))
 import           Data.These (These (..))
-import           Data.Time.Units (Microsecond)
 import           Data.Typeable (Typeable)
 import qualified Network.Socket as Socket
 import           Network.Socket.ByteString (recvFrom)
 
 import           Network.NTP.Packet (NtpOffset (..) , NtpPacket (..), clockOffset,
-                     mkNtpPacket, ntpPacketSize)
+                     mkNtpPacket, ntpPacketSize, Microsecond)
 import           Network.NTP.Trace (NtpTrace (..))
 import           Network.NTP.Util (AddrFamily (..), Addresses, Sockets,
                      WithAddrFamily (..), createAndBindSock,

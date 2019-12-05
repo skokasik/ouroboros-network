@@ -1,7 +1,7 @@
 module Network.NTP.Trace
 where
 import           Control.Exception (IOException)
-import           Data.Time.Units (Microsecond)
+import           Network.NTP.Packet (Microsecond)
 
 data NtpTrace
     = NtpTraceStartNtpClient
