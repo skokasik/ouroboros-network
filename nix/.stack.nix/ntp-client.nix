@@ -27,7 +27,6 @@
           (hsPkgs.stm)
           (hsPkgs.these)
           (hsPkgs.time)
-          (hsPkgs.time-units)
           ];
         };
       exes = {
@@ -43,7 +42,6 @@
             (hsPkgs.stm)
             (hsPkgs.these)
             (hsPkgs.time)
-            (hsPkgs.time-units)
             ];
           };
         };
@@ -53,7 +51,6 @@
             (hsPkgs.base)
             (hsPkgs.binary)
             (hsPkgs.time)
-            (hsPkgs.time-units)
             (hsPkgs.QuickCheck)
             (hsPkgs.tasty)
             (hsPkgs.tasty-quickcheck)
