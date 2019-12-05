@@ -24,7 +24,6 @@ Library
                       , stm
                       , these
                       , time
-                      , time-units
 
   hs-source-dirs:       src
   default-language:     Haskell2010
@@ -55,7 +54,6 @@ Executable ntp-app
                       , stm
                       , these
                       , time
-                      , time-units
                         
 test-suite ntp-client-test
   hs-source-dirs:     test, src
@@ -65,7 +63,6 @@ test-suite ntp-client-test
   build-depends:        base
                       , binary >= 0.8
                       , time
-                      , time-units
                       , QuickCheck
                       , tasty
                       , tasty-quickcheck
