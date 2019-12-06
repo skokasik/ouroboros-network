@@ -702,7 +702,7 @@ revalidate TestSetup { testLedgerState, testInitialTxs } =
         Right ledgerState' -> go ledgerState' ((tx, True):revalidated)  txs'
 
 {-------------------------------------------------------------------------------
-  TestSetupWithTxInMempol: a mempool and a transaction that is in the mempool
+  TestSetupWithTxInMempool: a mempool and a transaction that is in the mempool
 -------------------------------------------------------------------------------}
 
 -- | A 'TestSetup' along with a transaction that is in the Mempool.
