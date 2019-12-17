@@ -226,7 +226,7 @@ test_golden_ChainState = goldenTestCBOR
     exampleChainState
     "test-consensus/golden/cbor/byron/ChainState"
   where
-    exampleChainState = CS.appendEBB secParam windowSize 6 $
+    exampleChainState =
       CS.fromList
         secParam
         windowSize
