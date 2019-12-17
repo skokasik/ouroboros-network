@@ -303,6 +303,7 @@ runChainSync securityParam maxClockSkew (ClientUpdates clientUpdates)
         client = chainSyncClient
                    (pipelineDecisionLowHighMark 10 20)
                    chainSyncTracer
+                   (const False)
                    (nodeCfg clientId)
                    btime
                    maxClockSkew

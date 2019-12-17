@@ -230,7 +230,7 @@ test_golden_ChainState = goldenTestCBOR
       CS.fromList
         secParam
         windowSize
-        (At 3, Seq.fromList signers, CS.EbbMap mempty)
+        (At 3, Seq.fromList signers)
 
     secParam = SecurityParam 2
     windowSize = CS.WindowSize 3

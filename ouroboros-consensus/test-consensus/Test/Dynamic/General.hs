@@ -29,6 +29,7 @@ import           Control.Monad.IOSim (runSimOrThrow)
 import           Ouroboros.Network.Block (BlockNo (..), pattern BlockPoint,
                      pattern GenesisPoint, HasHeader, Point, blockPoint)
 
+import           Ouroboros.Consensus.Block (getHeader)
 import           Ouroboros.Consensus.BlockchainTime
 import           Ouroboros.Consensus.Node.ProtocolInfo
 import           Ouroboros.Consensus.Node.Run
@@ -233,7 +234,7 @@ prop_general k TestConfig{numSlots, nodeJoinPlan, nodeTopology} mbSchedule
             guard $ j <= s
 
             guard $ not $
-                isJust (nodeIsEBB b) || Set.member (blockPoint b) invalids
+                isJust (nodeIsEBB (getHeader b)) || Set.member (blockPoint b) invalids
 
             pure [cid]
 
