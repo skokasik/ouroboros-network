@@ -32,4 +32,8 @@ data NtpTrace
     | NtpTraceSentToIOException String IOException
     | NtpTraceSentTryResend String
     | NtpTraceSentNotRetrying
+-- new code
+    | NtpTraceSocketReaderDecodeError String
+    | NtpTraceClientStartQuery
+    | NtpTraceClientWaitingForRepliesTimeout
     deriving (Show)
