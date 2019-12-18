@@ -33,6 +33,7 @@ module Ouroboros.Consensus.ChainSyncClient (
 import           Control.Monad
 import           Control.Monad.Except
 import           Control.Tracer
+import qualified Data.IntSet as IntSet
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Maybe (isJust)
@@ -41,6 +42,7 @@ import           Data.Typeable
 import           Data.Void (Void)
 import           Data.Word (Word64)
 import           GHC.Generics (Generic)
+import           GHC.Stack (HasCallStack)
 
 import           Control.Monad.Class.MonadThrow
 
@@ -205,6 +207,8 @@ instance ( ProtocolLedgerView blk
 data KnownIntersectionState blk = KnownIntersectionState
   { theirFrag       :: !(AnchoredFragment (Header blk))
     -- ^ The candidate, the synched fragment of their chain.
+    --
+    -- INVARIANT: the anchor is not an EBB.
   , theirChainState :: !(ChainState (BlockProtocol blk))
     -- ^ 'ChainState' corresponding to the tip (most recent block) of
     -- 'theirFrag'.
@@ -237,16 +241,19 @@ chainSyncClient
     :: forall m blk.
        ( IOLike m
        , ProtocolLedgerView blk
+       , HasCallStack
        )
     => MkPipelineDecision
     -> Tracer m (TraceChainSyncClientEvent blk)
+    -> (Header blk -> Bool)
+       -- ^ is EBB?
     -> NodeConfig (BlockProtocol blk)
     -> BlockchainTime m
     -> ClockSkew   -- ^ Maximum clock skew
     -> ChainDbView m blk
     -> StrictTVar m (AnchoredFragment (Header blk))
     -> Consensus ChainSyncClientPipelined blk m
-chainSyncClient mkPipelineDecision0 tracer cfg btime
+chainSyncClient mkPipelineDecision0 tracer isEBB cfg btime
                 (ClockSkew maxSkew)
                 ChainDbView
                 { getCurrentChain
@@ -280,10 +287,20 @@ chainSyncClient mkPipelineDecision0 tracer cfg btime
       -- means that if an intersection is found for one of these points, it
       -- was an intersection within the last @k@ blocks of our current chain.
       -- If not, we could never switch to this candidate chain anyway.
-      let maxOffset = fromIntegral (AF.length ourFrag)
-          points    = AF.selectPoints
-                        (map fromIntegral (offsets maxOffset))
-                        ourFrag
+      --
+      -- None of the selected points is an EBB.
+      let ebbOffsets    = IntSet.fromList
+            [ offset
+            | (offset, hdr) <- [0.. ] `zip` AF.toNewestFirst ourFrag
+            , isEBB hdr
+            ]
+          nonEbbOffsets =
+            filter (`IntSet.notMember` ebbOffsets) $
+            map fromIntegral $
+            offsets maxOffset
+          maxOffset     = fromIntegral (AF.length ourFrag)
+          points        = AF.selectPoints nonEbbOffsets ourFrag
+
           uis = UnknownIntersectionState
             { ourFrag       = ourFrag
             , ourChainState = ourChainState
@@ -312,6 +329,11 @@ chainSyncClient mkPipelineDecision0 tracer cfg btime
                      } -> do
       traceWith tracer $ TraceFoundIntersection intersection ourTip theirTip
       traceException $ do
+        let invalidIntersection = disconnect InvalidIntersection
+              { _intersection = intersection
+              , _ourTip       = ourTip
+              , _theirTip     = theirTip
+              }
         -- Roll back the current chain fragment to the @intersection@.
         --
         -- While the primitives in the ChainSync protocol are "roll back",
@@ -333,16 +355,17 @@ chainSyncClient mkPipelineDecision0 tracer cfg btime
           case (,) <$> AF.rollback (castPoint intersection) ourFrag
                    <*> rewindChainState cfg ourChainState (pointSlot intersection)
           of
-            Just (c, d) -> return (c, d)
+            Just (c, d)
+              -- The @intersection@ is an EBB, even though we did not send
+              -- EBBs' points to find an intersection with. The node must have
+              -- sent us an invalid intersection point.
+              | Right hdr <- AF.head c, isEBB hdr -> invalidIntersection
+              | otherwise                         -> return (c, d)
             -- The @intersection@ is not on the candidate chain, even though
             -- we sent only points from the candidate chain to find an
             -- intersection with. The node must have sent us an invalid
             -- intersection point.
-            Nothing     -> disconnect InvalidIntersection
-              { _intersection = intersection
-              , _ourTip       = ourTip
-              , _theirTip     = theirTip
-              }
+            Nothing                               -> invalidIntersection
         atomically $ writeTVar varCandidate theirFrag
         let kis = KnownIntersectionState
               { theirFrag       = theirFrag
@@ -399,11 +422,23 @@ chainSyncClient mkPipelineDecision0 tracer cfg btime
            --   point must also.
            Nothing -> error
              "anchor point must be on candidate fragment if they intersect"
-           Just (_, trimmedCandidateFrag) -> return $ Just kis
-             { ourFrag   = ourFrag'
-             , theirFrag = trimmedCandidateFrag
-             , ourTip    = ourTip'
-             }
+           Just (adopted, trimmedCandidateFrag) ->
+             -- By logic above, @adopted@ ends with the anchor point of
+             -- @ourFrag'@. We extend the fragments backwards from that point
+             -- until we find a non-EBB header or else the old anchor point
+             -- (which we already know is not an EBB), since the (shared)
+             -- anchor of the 'ourFrag' and 'theirFrag' fields must not be an
+             -- EBB.
+             return $ Just kis
+               { ourFrag   = joinEBBs ourFrag'
+               , theirFrag = joinEBBs trimmedCandidateFrag
+               , ourTip    = ourTip'
+               }
+             where
+               ebbs          = AF.takeWhileNewest isEBB adopted
+               joinEBBs frag = case AF.join ebbs frag of
+                 Nothing    -> error "join must succeed  after split"
+                 Just frag' -> frag'
 
         | otherwise ->
           -- No more intersection with the current chain
@@ -634,11 +669,19 @@ chainSyncClient mkPipelineDecision0 tracer cfg btime
                    , theirChainState
                    , ourTip
                    } -> traceException $ do
+      let invalidRollBack = disconnect InvalidRollBack
+            { _newPoint = intersection
+            , _ourTip   = ourTip
+            , _theirTip = theirTip
+            }
       (theirFrag', theirChainState') <-
         case (,) <$> AF.rollback (castPoint intersection) theirFrag
                  <*> rewindChainState cfg theirChainState (pointSlot intersection)
         of
-          Just (c, d) -> return (c,d)
+          Just (c, d)
+                -- The intersection is an EBB.
+              | Right hdr <- AF.head c, isEBB hdr -> invalidRollBack
+              | otherwise                         -> pure (c, d)
           -- Remember that we use our current chain fragment as the starting
           -- point for the candidate's chain. Our fragment contained @k@
           -- headers. At this point, the candidate fragment might have grown to
@@ -661,11 +704,7 @@ chainSyncClient mkPipelineDecision0 tracer cfg btime
           -- forward @s@ new headers where @s >= r@.
           --
           -- Thus, @k - r + s >= k@.
-          Nothing     -> disconnect InvalidRollBack
-            { _newPoint = intersection
-            , _ourTip   = ourTip
-            , _theirTip = theirTip
-            }
+          Nothing                                 -> invalidRollBack
 
       let kis' = kis
             { theirFrag       = theirFrag'

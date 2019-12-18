@@ -30,6 +30,7 @@ module Ouroboros.Consensus.NodeNetwork (
 
 import           Control.Monad (void)
 import           Data.ByteString.Lazy (ByteString)
+import           Data.Maybe (isJust)
 import           Data.Proxy (Proxy (..))
 import           Data.Void (Void)
 
@@ -133,7 +134,7 @@ protocolHandlers
     :: forall m blk peer.
        ( IOLike m
        , ApplyTx blk
-       , ProtocolLedgerView blk
+       , RunNode blk
        )
     => NodeArgs   m peer blk  --TODO eliminate, merge relevant into NodeKernel
     -> NodeKernel m peer blk
@@ -149,6 +150,7 @@ protocolHandlers NodeArgs {btime, maxClockSkew, tracers, maxUnackTxs, chainSyncP
         chainSyncClient
           chainSyncPipelining
           (chainSyncClientTracer tracers)
+          (isJust . nodeIsEBB)
           getNodeConfig
           btime
           maxClockSkew
