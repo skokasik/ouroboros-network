@@ -11,8 +11,11 @@ module Network.NTP.MUtil
 where
 
 import           Control.Concurrent (threadDelay)
-import           Control.Concurrent.Async (async, concurrently_) -- , race, race_)
+import           Control.Concurrent.Async (async, concurrently_, race, waitAnyCancel, withAsync)
+import           Control.Concurrent.STM (atomically, check)
+import           Control.Concurrent.STM.TBQueue
 import           Control.Exception (Exception, IOException, catch, throw)
+import           System.IO.Error (tryIOError)
 import           Control.Monad (forever, void)
 import           Control.Tracer
 import           Data.Bifunctor (Bifunctor (..))
@@ -126,3 +129,60 @@ testQuery = do
         sendPacket socket pack $ (replacePort ntpPort $ Socket.addrAddress dest)
         print "send"
         threadDelay 10000000
+
+
+testClient :: IO ()
+testClient = do  
+  let
+    tracer :: Tracer IO NtpTrace
+    tracer = contramapM (return . show) stdoutTracer
+  client tracer
+
+client tracer = withResources tracer $ \(socket, addresses, inQueue) -> do
+    error <- race (socketReaderThread tracer inQueue socket)
+                  (runQueryLoop tracer inQueue socket addresses)
+    --- rethrow /log errors
+    return ()
+
+
+socketReaderThread :: Tracer IO NtpTrace -> TBQueue NtpPacket -> Socket -> IO (Either IOError ())
+socketReaderThread tracer inQueue socket = tryIOError $ forever $ do
+    (bs, _) <- Socket.ByteString.recvFrom socket ntpPacketSize
+    case decodeOrFail $ LBS.fromStrict bs of
+        Left  (_, _, err) -> traceWith tracer $ NtpTraceSocketReaderDecodeError err
+        Right (_, _, packet) -> do
+          traceWith tracer NtpTraceReceiveLoopPacketReceived
+          atomically $ writeTBQueue inQueue packet
+
+runQueryLoop :: Tracer IO NtpTrace -> TBQueue NtpPacket -> Socket -> AddrInfo -> IO (Either IOError ())
+runQueryLoop tracer inQueue socket addresses = tryIOError $ forever $ do
+    traceWith tracer NtpTraceClientStartQuery
+    void $ atomically $ flushTBQueue inQueue
+    (_id, replies) <- withAsync (send tracer socket addresses) $ \_sender -> do
+        t1 <- async $ timeout inQueue
+        t2 <- async $ enoughtReplies inQueue 3
+        waitAnyCancel [t1, t2]
+    print replies
+    threadDelay 20000000
+    where
+        timeout q = do
+            threadDelay 5000000
+            traceWith tracer NtpTraceClientWaitingForRepliesTimeout
+            atomically $ flushTBQueue q
+
+        enoughtReplies q n = atomically $ do
+            l <- lengthTBQueue q
+            check $ l >= n
+            flushTBQueue q
+
+        send tracer sock addr = do
+            p <- mkNtpPacket
+            void $ Socket.ByteString.sendTo sock (LBS.toStrict $ encode p) (replacePort ntpPort $ Socket.addrAddress addr)
+          
+-- todo : use bracket here
+withResources :: Tracer IO NtpTrace -> ((Socket, AddrInfo, TBQueue NtpPacket) -> IO ()) -> IO ()
+withResources tracer action = do
+    socket <- (firstIPv4 <$> udpLocalAddresses) >>= createAndBindSock tracer
+    dest <- firstIPv4 <$> resolveHost "0.pool.ntp.org"
+    inQueue <- atomically $ newTBQueue 100 -- ???
+    action (socket, dest, inQueue)
