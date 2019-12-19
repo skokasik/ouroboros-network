@@ -35,5 +35,8 @@ data NtpTrace
 -- new code
     | NtpTraceSocketReaderDecodeError String
     | NtpTraceClientStartQuery
+    | NtpTraceClientSleeping
     | NtpTraceClientWaitingForRepliesTimeout
+    | NtpTraceUpdateStatusQueryFailed
+
     deriving (Show)
