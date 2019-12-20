@@ -41,6 +41,9 @@ import           Network.NTP.Packet (NtpPacket, mkNtpPacket, ntpPacketSize, Micr
 import           Network.NTP.Trace (NtpTrace (..))
 
 
+main :: IO ()
+main = testClient
+
 data NtpClientSettings = NtpClientSettings
     { ntpServers         :: [String]
       -- ^ list of servers addresses
@@ -146,7 +149,7 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
     void $ atomically $ flushTBQueue inQueue
     (_id, outcome) <- withAsync (send tracer servers) $ \_sender -> do
         t1 <- async $ timeout inQueue
-        t2 <- async $ checkReplies inQueue 3
+        t2 <- async $ checkReplies inQueue 10
         waitAnyCancel [t1, t2]
     case outcome of
         Timeout _ -> do
@@ -172,9 +175,10 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
             return $ SuitableReplies r
 
         send tracer (sock, addrs) = forM_ addrs $ \addr -> do
+            threadDelay 2000000
             p <- mkNtpPacket
-            putStrLn "packetSend"
             void $ Socket.ByteString.sendTo sock (LBS.toStrict $ encode p) (setNtpPort $ Socket.addrAddress addr)
+            putStrLn "packetSend"
 
 testClient :: IO ()
 testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings runClient
@@ -187,8 +191,8 @@ testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings ru
     settings :: NtpClientSettings
     settings = NtpClientSettings
         { ntpServers = ["0.de.pool.ntp.org","0.europe.pool.ntp.org","0.pool.ntp.org","1.pool.ntp.org","2.pool.ntp.org","3.pool.ntp.org"]
-        , ntpResponseTimeout = fromInteger 3000000
-        , ntpPollDelay       = fromInteger 10000000
+        , ntpResponseTimeout = fromInteger 20000000
+        , ntpPollDelay       = fromInteger 60000000
         }
 
 
