@@ -149,12 +149,13 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
     void $ atomically $ flushTBQueue inQueue
     (_id, outcome) <- withAsync (send tracer servers) $ \_sender -> do
         t1 <- async $ timeout inQueue
-        t2 <- async $ checkReplies inQueue 10
+        t2 <- async $ checkReplies inQueue 6
         waitAnyCancel [t1, t2]
     case outcome of
         Timeout _ -> do
             traceWith tracer NtpTraceUpdateStatusQueryFailed
             atomically $ writeTVar ntpStatus NtpSyncUnavailable
+            error "some packet losses"
         SuitableReplies l -> do
              traceWith tracer $ NtpTraceUpdateStatusClockOffset 0
              atomically $ writeTVar ntpStatus $ NtpDrift $ minimum [0]
@@ -175,7 +176,7 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
             return $ SuitableReplies r
 
         send tracer (sock, addrs) = forM_ addrs $ \addr -> do
-            threadDelay 2000000
+--            threadDelay 2000000
             p <- mkNtpPacket
             void $ Socket.ByteString.sendTo sock (LBS.toStrict $ encode p) (setNtpPort $ Socket.addrAddress addr)
             putStrLn "packetSend"
@@ -186,13 +187,13 @@ testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings ru
     runClient ntpClient = race_ getLine $ forever $ do
             status <- atomically $ ntpGetStatus ntpClient
             traceWith stdoutTracer $ show ("main",status)
-            threadDelay 3000000
+            threadDelay 60000000
 
     settings :: NtpClientSettings
     settings = NtpClientSettings
         { ntpServers = ["0.de.pool.ntp.org","0.europe.pool.ntp.org","0.pool.ntp.org","1.pool.ntp.org","2.pool.ntp.org","3.pool.ntp.org"]
-        , ntpResponseTimeout = fromInteger 20000000
-        , ntpPollDelay       = fromInteger 60000000
+        , ntpResponseTimeout = fromInteger 5000000
+        , ntpPollDelay       = fromInteger 30000000
         }
 
 
@@ -207,10 +208,13 @@ oneshotClient ::
     -> (NtpClientSettings, TVar NtpStatus)
     -> IO ()
 oneshotClient tracer (ntpSettings, ntpStatus) = withResources $ \(socket, addresses, inQueue) -> do
-    error <- race (socketReaderThread tracer inQueue socket)
+    err <- race (socketReaderThread tracer inQueue socket)
                   (runQueryLoop tracer ntpSettings ntpStatus inQueue (socket, addresses) )
-    --- rethrow /log errors
-    return ()
+    case err of
+        (Right (Left e)) -> error $ show e
+        (Left  (Left e)) -> error $ show e
+        _ -> error "unreachable"
+--    return ()
  where
 -- todo : use bracket here
     withResources :: ((Socket, [AddrInfo], TBQueue NtpPacket) -> IO ()) -> IO ()
