@@ -16,6 +16,7 @@ data NtpTrace
     | NtpTraceSpawnNtpClientSocketsClosed
     | NtpTraceSpawnNtpClientResolveDNS
     | NtpTraceSpawnNtpClientResolvePending
+    | NtpTracePacketSent
     | NtpTraceReceiveLoopDecodeError String
     | NtpTraceReceiveLoopHandleIOException IOException
     | NtpTraceReceiveLoopException
