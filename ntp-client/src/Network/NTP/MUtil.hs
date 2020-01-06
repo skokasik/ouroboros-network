@@ -11,23 +11,16 @@ module Network.NTP.MUtil
 where
 
 import           Control.Concurrent (threadDelay)
-import           Control.Concurrent.Async (Async, async, concurrently_, race, race_, waitAnyCancel, withAsync)
+import           Control.Concurrent.Async -- (Async, async, link, race, race_, waitAnyCancel, withAsync)
 import           Control.Concurrent.STM (STM, atomically, check)
 import           Control.Concurrent.STM.TBQueue
 import           Control.Concurrent.STM.TVar
-import           Control.Exception (Exception, IOException, catch, throw)
 import           System.IO.Error (tryIOError)
 import           Control.Monad (forever, void, forM, forM_)
 import           Control.Tracer
-import           Data.Bifunctor (Bifunctor (..))
 import           Data.Binary (decodeOrFail, encode)
-import           Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LBS
-import           Data.Foldable (traverse_)
 import           Data.List (find)
-import           Data.Semigroup (First (..), Last (..), Option (..),
-                     Semigroup (..))
-import           Data.These (These (..))
 import           Network.Socket (AddrInfo,
                      AddrInfoFlag (AI_ADDRCONFIG, AI_PASSIVE),
                      Family (AF_INET, AF_INET6), PortNumber, SockAddr (..),
@@ -58,7 +51,7 @@ data NtpClient = NtpClient
       ntpGetStatus        :: STM NtpStatus
       -- | Bypass all internal threadDelays and trigger a new NTP query.
     , ntpTriggerUpdate    :: IO ()
-    , ntpClient           :: Async ()
+    , ntpThread           :: Async ()
     }
 
 data NtpStatus =
@@ -82,8 +75,9 @@ withNtpClient tracer ntpSettings action = do
               , ntpTriggerUpdate = do
                    traceWith tracer NtpTraceClientActNow
                    atomically $ writeTVar ntpStatus NtpSyncPending
-              , ntpClient = tid
+              , ntpThread = tid
               }
+        link tid         -- an error in the ntp-client kills the appliction !
         action client
 
 udpLocalAddresses :: IO [AddrInfo]
@@ -147,7 +141,7 @@ runQueryLoop ::
 runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever $ do
     traceWith tracer NtpTraceClientStartQuery
     void $ atomically $ flushTBQueue inQueue
-    (_id, outcome) <- withAsync (send tracer servers) $ \_sender -> do
+    (_id, outcome) <- withAsync (send servers) $ \_sender -> do
         t1 <- async $ timeout inQueue
         t2 <- async $ checkReplies inQueue 6
         waitAnyCancel [t1, t2]
@@ -155,7 +149,6 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
         Timeout _ -> do
             traceWith tracer NtpTraceUpdateStatusQueryFailed
             atomically $ writeTVar ntpStatus NtpSyncUnavailable
-            error "some packet losses"
         SuitableReplies l -> do
              traceWith tracer $ NtpTraceUpdateStatusClockOffset 0
              atomically $ writeTVar ntpStatus $ NtpDrift $ minimum [0]
@@ -175,19 +168,18 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
                 flushTBQueue q
             return $ SuitableReplies r
 
-        send tracer (sock, addrs) = forM_ addrs $ \addr -> do
---            threadDelay 2000000
+        send (sock, addrs) = forM_ addrs $ \addr -> do
             p <- mkNtpPacket
             void $ Socket.ByteString.sendTo sock (LBS.toStrict $ encode p) (setNtpPort $ Socket.addrAddress addr)
-            putStrLn "packetSend"
+            traceWith tracer NtpTracePacketSent
 
 testClient :: IO ()
-testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings runClient
+testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings runApplication
   where
-    runClient ntpClient = race_ getLine $ forever $ do
-            status <- atomically $ ntpGetStatus ntpClient
-            traceWith stdoutTracer $ show ("main",status)
-            threadDelay 60000000
+    runApplication ntpClient = race_ getLine $ forever $ do
+        status <- atomically $ ntpGetStatus ntpClient
+        traceWith stdoutTracer $ show ("main"::String, status)
+        threadDelay 60000000
 
     settings :: NtpClientSettings
     settings = NtpClientSettings
@@ -196,12 +188,13 @@ testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings ru
         , ntpPollDelay       = fromInteger 30000000
         }
 
-
 ntpClientThread ::
        Tracer IO NtpTrace
     -> (NtpClientSettings, TVar NtpStatus)
     -> IO ()
-ntpClientThread = oneshotClient
+ntpClientThread tracer args = do
+    oneshotClient tracer args
+    putStrLn "ntpClientThread died"
 
 oneshotClient ::
        Tracer IO NtpTrace
@@ -214,7 +207,6 @@ oneshotClient tracer (ntpSettings, ntpStatus) = withResources $ \(socket, addres
         (Right (Left e)) -> error $ show e
         (Left  (Left e)) -> error $ show e
         _ -> error "unreachable"
---    return ()
  where
 -- todo : use bracket here
     withResources :: ((Socket, [AddrInfo], TBQueue NtpPacket) -> IO ()) -> IO ()
