@@ -5,7 +5,8 @@
 {-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications    #-}
-{-# LANGUAGE LambdaCase    #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE NumericUnderscores  #-}
 
 module Network.NTP.MUtil
 where
@@ -16,6 +17,7 @@ import           Control.Concurrent.STM (STM, atomically, check)
 import           Control.Concurrent.STM.TBQueue
 import           Control.Concurrent.STM.TVar
 import           System.IO.Error (tryIOError)
+import           System.IO.Error (userError, ioError) -- testing
 import           Control.Monad (forever, void, forM, forM_)
 import           Control.Tracer
 import           Data.Binary (decodeOrFail, encode)
@@ -118,6 +120,17 @@ setNtpPort addr = case addr of
     ntpPort :: PortNumber
     ntpPort = 123
 
+createAndBindSock
+    :: Tracer IO NtpTrace
+    -> AddrInfo
+    -> IO Socket
+createAndBindSock tracer addr = do
+    sock <- Socket.socket (addrFamily addr) Datagram Socket.defaultProtocol
+    Socket.setSocketOption sock ReuseAddr 1
+    Socket.bind sock (addrAddress addr)
+    traceWith tracer $ NtpTraceSocketCreated (show $ addrFamily addr) (show $ addrAddress addr)
+    return sock
+
 socketReaderThread :: Tracer IO NtpTrace -> TBQueue NtpPacket -> Socket -> IO (Either IOError ())
 socketReaderThread tracer inQueue socket = tryIOError $ forever $ do
     (bs, _) <- Socket.ByteString.recvFrom socket ntpPacketSize
@@ -179,22 +192,28 @@ testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings ru
     runApplication ntpClient = race_ getLine $ forever $ do
         status <- atomically $ ntpGetStatus ntpClient
         traceWith stdoutTracer $ show ("main"::String, status)
-        threadDelay 60000000
+        threadDelay 60_000_000
 
     settings :: NtpClientSettings
     settings = NtpClientSettings
         { ntpServers = ["0.de.pool.ntp.org","0.europe.pool.ntp.org","0.pool.ntp.org","1.pool.ntp.org","2.pool.ntp.org","3.pool.ntp.org"]
-        , ntpResponseTimeout = fromInteger 5000000
-        , ntpPollDelay       = fromInteger 30000000
+        , ntpResponseTimeout = fromInteger 5_000_000
+        , ntpPollDelay       = fromInteger 30_000_000
         }
 
 ntpClientThread ::
        Tracer IO NtpTrace
     -> (NtpClientSettings, TVar NtpStatus)
     -> IO ()
-ntpClientThread tracer args = do
+ntpClientThread tracer args@(_, ntpStatus) = forM_ restartDelay $ \t -> do
+    traceWith tracer $ NtpTraceRestartDelay t
+    threadDelay $ t * 1_000_000
+    traceWith tracer NtpTraceRestartingClient
     oneshotClient tracer args
-    putStrLn "ntpClientThread died"
+    atomically $ writeTVar ntpStatus NtpSyncUnavailable
+    where
+      restartDelay :: [Int]
+      restartDelay = [0, 5, 10, 20, 60, 180, 600] ++ repeat 600
 
 oneshotClient ::
        Tracer IO NtpTrace
@@ -204,8 +223,8 @@ oneshotClient tracer (ntpSettings, ntpStatus) = withResources $ \(socket, addres
     err <- race (socketReaderThread tracer inQueue socket)
                   (runQueryLoop tracer ntpSettings ntpStatus inQueue (socket, addresses) )
     case err of
-        (Right (Left e)) -> error $ show e
-        (Left  (Left e)) -> error $ show e
+        (Right (Left e)) -> traceWith tracer $ NtpTraceQueryLoopIOException e
+        (Left  (Left e)) -> traceWith tracer $ NtpTraceSocketReaderIOException e
         _ -> error "unreachable"
  where
 -- todo : use bracket here
@@ -215,14 +234,3 @@ oneshotClient tracer (ntpSettings, ntpStatus) = withResources $ \(socket, addres
         dest <- forM (ntpServers ntpSettings) $ \server -> firstIPv4 <$> resolveHost server
         inQueue <- atomically $ newTBQueue 100 -- ???
         action (socket, dest, inQueue)
-
-createAndBindSock
-    :: Tracer IO NtpTrace
-    -> AddrInfo
-    -> IO Socket
-createAndBindSock tracer addr = do
-    sock <- Socket.socket (addrFamily addr) Datagram Socket.defaultProtocol
-    Socket.setSocketOption sock ReuseAddr 1
-    Socket.bind sock (addrAddress addr)
-    traceWith tracer $ NtpTraceSocketCreated (show $ addrFamily addr) (show $ addrAddress addr)
-    return sock

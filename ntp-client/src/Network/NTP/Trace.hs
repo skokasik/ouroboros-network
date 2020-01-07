@@ -39,5 +39,8 @@ data NtpTrace
     | NtpTraceClientSleeping
     | NtpTraceClientWaitingForRepliesTimeout
     | NtpTraceUpdateStatusQueryFailed
-
+    | NtpTraceRestartDelay Int
+    | NtpTraceRestartingClient
+    | NtpTraceSocketReaderIOException IOException
+    | NtpTraceQueryLoopIOException IOException
     deriving (Show)
