@@ -167,8 +167,15 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
              atomically $ writeTVar ntpStatus $ NtpDrift $ minimum [0]
              
     traceWith tracer NtpTraceClientSleeping
-    threadDelay $ fromIntegral $ ntpPollDelay ntpSettings
-      where
+    race_
+              (threadDelay $ fromIntegral $ ntpPollDelay ntpSettings)
+              (do
+                atomically $ do
+                  s <- readTVar ntpStatus
+                  check $ s == NtpSyncPending
+                traceWith tracer NtpTraceResolveNow
+              )
+    where
         timeout q = do
             threadDelay $ fromIntegral $ ntpResponseTimeout ntpSettings
             traceWith tracer NtpTraceClientWaitingForRepliesTimeout
@@ -192,13 +199,14 @@ testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings ru
     runApplication ntpClient = race_ getLine $ forever $ do
         status <- atomically $ ntpGetStatus ntpClient
         traceWith stdoutTracer $ show ("main"::String, status)
-        threadDelay 60_000_000
+        threadDelay 10_000_000
+        ntpTriggerUpdate ntpClient
 
     settings :: NtpClientSettings
     settings = NtpClientSettings
         { ntpServers = ["0.de.pool.ntp.org","0.europe.pool.ntp.org","0.pool.ntp.org","1.pool.ntp.org","2.pool.ntp.org","3.pool.ntp.org"]
         , ntpResponseTimeout = fromInteger 5_000_000
-        , ntpPollDelay       = fromInteger 30_000_000
+        , ntpPollDelay       = fromInteger 300_000_000
         }
 
 ntpClientThread ::
