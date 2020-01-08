@@ -44,4 +44,5 @@ data NtpTrace
     | NtpTraceSocketReaderIOException IOException
     | NtpTraceQueryLoopIOException IOException
     | NtpTraceResolveNow
+    | NtpTraceSocketClosed
     deriving (Show)
