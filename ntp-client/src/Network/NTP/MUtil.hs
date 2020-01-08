@@ -16,6 +16,7 @@ import           Control.Concurrent.Async -- (Async, async, link, race, race_, w
 import           Control.Concurrent.STM (STM, atomically, check)
 import           Control.Concurrent.STM.TBQueue
 import           Control.Concurrent.STM.TVar
+import           Control.Exception (bracket)
 import           System.IO.Error (tryIOError)
 import           System.IO.Error (userError, ioError) -- testing
 import           Control.Monad (forever, void, forM, forM_)
@@ -66,7 +67,6 @@ data NtpStatus =
     | NtpSyncUnavailable deriving (Eq, Show)
 
 -- | Setup a NtpClient and run a computation that uses that client.
--- Todo : proper bracket-style tear-down of the NTP client.
 withNtpClient :: Tracer IO NtpTrace -> NtpClientSettings -> (NtpClient -> IO a) -> IO a
 withNtpClient tracer ntpSettings action = do
     traceWith tracer NtpTraceStartNtpClient
@@ -137,8 +137,8 @@ socketReaderThread tracer inQueue socket = tryIOError $ forever $ do
     case decodeOrFail $ LBS.fromStrict bs of
         Left  (_, _, err) -> traceWith tracer $ NtpTraceSocketReaderDecodeError err
         Right (_, _, packet) -> do
-          traceWith tracer NtpTraceReceiveLoopPacketReceived
-          atomically $ writeTBQueue inQueue packet
+            traceWith tracer NtpTraceReceiveLoopPacketReceived
+            atomically $ writeTBQueue inQueue packet
 
 data QueryOutcome
     = Timeout [NtpPacket]
@@ -154,10 +154,7 @@ runQueryLoop ::
 runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever $ do
     traceWith tracer NtpTraceClientStartQuery
     void $ atomically $ flushTBQueue inQueue
-    (_id, outcome) <- withAsync (send servers) $ \_sender -> do
-        t1 <- async $ timeout inQueue
-        t2 <- async $ checkReplies inQueue 6
-        waitAnyCancel [t1, t2]
+    (_id, outcome) <- runThreads
     case outcome of
         Timeout _ -> do
             traceWith tracer NtpTraceUpdateStatusQueryFailed
@@ -176,6 +173,11 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
                 traceWith tracer NtpTraceResolveNow
               )
     where
+        runThreads
+           = withAsync (send servers >> timeout inQueue) $ \sender ->
+               withAsync (timeout inQueue)                 $ \delay ->
+                 withAsync (checkReplies inQueue 6)          $ \revc ->                        
+                    waitAnyCancel [sender, delay, revc]
         timeout q = do
             threadDelay $ fromIntegral $ ntpResponseTimeout ntpSettings
             traceWith tracer NtpTraceClientWaitingForRepliesTimeout
@@ -227,18 +229,25 @@ oneshotClient ::
        Tracer IO NtpTrace
     -> (NtpClientSettings, TVar NtpStatus)
     -> IO ()
-oneshotClient tracer (ntpSettings, ntpStatus) = withResources $ \(socket, addresses, inQueue) -> do
-    err <- race (socketReaderThread tracer inQueue socket)
+oneshotClient tracer (ntpSettings, ntpStatus) = bracket acquire release action
+  where
+    action :: (Socket, [AddrInfo], TBQueue NtpPacket) -> IO ()
+    action (socket, addresses, inQueue) = do
+        err <- race (socketReaderThread tracer inQueue socket)
                   (runQueryLoop tracer ntpSettings ntpStatus inQueue (socket, addresses) )
-    case err of
-        (Right (Left e)) -> traceWith tracer $ NtpTraceQueryLoopIOException e
-        (Left  (Left e)) -> traceWith tracer $ NtpTraceSocketReaderIOException e
-        _ -> error "unreachable"
- where
--- todo : use bracket here
-    withResources :: ((Socket, [AddrInfo], TBQueue NtpPacket) -> IO ()) -> IO ()
-    withResources action = do
-        socket <- (firstIPv4 <$> udpLocalAddresses) >>= createAndBindSock tracer
+        case err of
+            (Right (Left e)) -> traceWith tracer $ NtpTraceQueryLoopIOException e
+            (Left  (Left e)) -> traceWith tracer $ NtpTraceSocketReaderIOException e
+            _ -> error "unreachable"
+
+    acquire :: IO (Socket, [AddrInfo], TBQueue NtpPacket)
+    acquire = do
         dest <- forM (ntpServers ntpSettings) $ \server -> firstIPv4 <$> resolveHost server
+        socket <- (firstIPv4 <$> udpLocalAddresses) >>= createAndBindSock tracer
         inQueue <- atomically $ newTBQueue 100 -- ???
-        action (socket, dest, inQueue)
+        return (socket, dest, inQueue)
+
+    release :: (Socket, [AddrInfo], TBQueue NtpPacket) -> IO ()
+    release (sock, _, _) = do
+        Socket.close sock
+        traceWith tracer $ NtpTraceSocketClosed
