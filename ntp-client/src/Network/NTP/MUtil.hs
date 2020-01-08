@@ -106,10 +106,10 @@ resolveHost host = Socket.getAddrInfo (Just hints) (Just host) Nothing
 isV4Addr :: AddrInfo -> Bool
 isV4Addr addr = addrFamily addr == AF_INET
 
-firstIPv4 :: [AddrInfo] -> AddrInfo
-firstIPv4 l = case find isV4Addr l of
-    Nothing -> error "no IPv4 addr found"
-    Just addr -> addr
+firstIPv4 :: String -> [AddrInfo] -> IO AddrInfo
+firstIPv4 name l = case find isV4Addr l of
+    Nothing -> ioError $ userError $ "host :" ++ name ++ "IPv4 addr not found"
+    Just addr -> return addr
 
 setNtpPort :: SockAddr ->  SockAddr
 setNtpPort addr = case addr of
@@ -211,6 +211,7 @@ testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings ru
         , ntpPollDelay       = fromInteger 300_000_000
         }
 
+-- TODO: maybe reset the delaytime if the oneshotClient did one sucessful query
 ntpClientThread ::
        Tracer IO NtpTrace
     -> (NtpClientSettings, TVar NtpStatus)
@@ -229,7 +230,10 @@ oneshotClient ::
        Tracer IO NtpTrace
     -> (NtpClientSettings, TVar NtpStatus)
     -> IO ()
-oneshotClient tracer (ntpSettings, ntpStatus) = bracket acquire release action
+oneshotClient tracer (ntpSettings, ntpStatus)
+  = (tryIOError $ bracket acquire release action) >>= \case
+      Right () -> return ()
+      Left err -> traceWith tracer $ NtpOneshotClientIOError err
   where
     action :: (Socket, [AddrInfo], TBQueue NtpPacket) -> IO ()
     action (socket, addresses, inQueue) = do
@@ -242,8 +246,8 @@ oneshotClient tracer (ntpSettings, ntpStatus) = bracket acquire release action
 
     acquire :: IO (Socket, [AddrInfo], TBQueue NtpPacket)
     acquire = do
-        dest <- forM (ntpServers ntpSettings) $ \server -> firstIPv4 <$> resolveHost server
-        socket <- (firstIPv4 <$> udpLocalAddresses) >>= createAndBindSock tracer
+        dest <- forM (ntpServers ntpSettings) $ \server -> resolveHost server >>= firstIPv4 server
+        socket <- udpLocalAddresses >>= firstIPv4 "localhost" >>= createAndBindSock tracer
         inQueue <- atomically $ newTBQueue 100 -- ???
         return (socket, dest, inQueue)
 
