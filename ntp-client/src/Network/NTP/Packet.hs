@@ -7,6 +7,7 @@ module Network.NTP.Packet
     , ntpPacketSize
     , mkNtpPacket
     , NtpOffset (..)
+    , getCurrentTime
     , clockOffsetPure
     , clockOffset
     , realMcsToNtp
