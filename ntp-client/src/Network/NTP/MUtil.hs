@@ -147,7 +147,7 @@ createAndBindSock tracer addr = do
     traceWith tracer $ NtpTraceSocketCreated (show $ addrFamily addr) (show $ addrAddress addr)
     return sock
 
-socketReaderThread :: Tracer IO NtpTrace -> TVar [ReceivedPacket] -> Socket -> IO (Either IOError ())
+socketReaderThread :: Tracer IO NtpTrace -> TVar (Maybe [ReceivedPacket]) -> Socket -> IO (Either IOError ())
 socketReaderThread tracer inQueue socket = tryIOError $ forever $ do
     (bs, _) <- Socket.ByteString.recvFrom socket ntpPacketSize
     t <- getCurrentTime
@@ -157,7 +157,10 @@ socketReaderThread tracer inQueue socket = tryIOError $ forever $ do
 -- todo : filter bad packets, i.e. late packets and spoofed packets
             traceWith tracer NtpTraceReceiveLoopPacketReceived
             let received = ReceivedPacket packet t (clockOffsetPure packet t)
-            atomically $ modifyTVar' inQueue ((:) received)
+            atomically $ modifyTVar' inQueue $ maybeAppend received
+    where
+      maybeAppend _ Nothing  = Nothing
+      maybeAppend p (Just l) = Just $ p:l
 
 threadDelayInterruptible :: TVar NtpStatus -> Int -> IO ()
 threadDelayInterruptible tvar t
@@ -174,12 +177,12 @@ runQueryLoop ::
        Tracer IO NtpTrace
     -> NtpClientSettings
     -> TVar NtpStatus
-    -> TVar [ReceivedPacket]
+    -> TVar (Maybe [ReceivedPacket])
     -> (Socket, [AddrInfo])
     -> IO (Either IOError ())
 runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever $ do
     traceWith tracer NtpTraceClientStartQuery
-    void $ atomically $ writeTVar inQueue []
+    void $ atomically $ writeTVar inQueue $ Just []
     (_id, outcome) <- runThreads
     case outcome of
         Timeout -> do
@@ -188,7 +191,8 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
         Result offset -> do
              traceWith tracer $ NtpTraceUpdateStatusClockOffset $ getNtpOffset offset
              atomically $ writeTVar ntpStatus $ NtpDrift offset
-             
+
+    void $ atomically $ writeTVar inQueue Nothing
     traceWith tracer NtpTraceClientSleeping
     threadDelayInterruptible ntpStatus $ fromIntegral $ ntpPollDelay ntpSettings
     where
@@ -205,10 +209,12 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
 
         checkReplies = do
             r <- atomically $ do
-                l <- readTVar inQueue
-                case (ntpReportPolicy ntpSettings) l of
-                     Wait -> retry
-                     Report r -> return r
+                q <- readTVar inQueue
+                case q of
+                   Nothing -> error "Queue of incomming packets not available"
+                   Just l -> case (ntpReportPolicy ntpSettings) l of
+                       Wait -> retry
+                       Report r -> return r
             return $ Result r
 
         send (sock, addrs) = do
@@ -259,7 +265,7 @@ oneshotClient tracer (ntpSettings, ntpStatus)
       Right () -> return ()
       Left err -> traceWith tracer $ NtpOneshotClientIOError err
   where
-    action :: (Socket, [AddrInfo], TVar [ReceivedPacket]) -> IO ()
+    action :: (Socket, [AddrInfo], TVar (Maybe [ReceivedPacket])) -> IO ()
     action (socket, addresses, inQueue) = do
         err <- race (socketReaderThread tracer inQueue socket)
                   (runQueryLoop tracer ntpSettings ntpStatus inQueue (socket, addresses) )
@@ -268,14 +274,14 @@ oneshotClient tracer (ntpSettings, ntpStatus)
             (Left  (Left e)) -> traceWith tracer $ NtpTraceSocketReaderIOException e
             _ -> error "unreachable"
 
-    acquire :: IO (Socket, [AddrInfo], TVar [ReceivedPacket])
+    acquire :: IO (Socket, [AddrInfo], TVar (Maybe [ReceivedPacket]))
     acquire = do
         dest <- forM (ntpServers ntpSettings) $ \server -> resolveHost server >>= firstIPv4 server
         socket <- udpLocalAddresses >>= firstIPv4 "localhost" >>= createAndBindSock tracer
-        inQueue <- atomically $ newTVar []
+        inQueue <- atomically $ newTVar Nothing
         return (socket, dest, inQueue)
 
-    release :: (Socket, [AddrInfo], TVar [ReceivedPacket]) -> IO ()
+    release :: (Socket, [AddrInfo], TVar (Maybe [ReceivedPacket])) -> IO ()
     release (sock, _, _) = do
         Socket.close sock
         traceWith tracer $ NtpTraceSocketClosed
