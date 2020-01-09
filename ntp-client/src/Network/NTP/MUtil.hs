@@ -154,6 +154,7 @@ socketReaderThread tracer inQueue socket = tryIOError $ forever $ do
     case decodeOrFail $ LBS.fromStrict bs of
         Left  (_, _, err) -> traceWith tracer $ NtpTraceSocketReaderDecodeError err
         Right (_, _, packet) -> do
+-- todo : filter bad packets, i.e. late packets and spoofed packets
             traceWith tracer NtpTraceReceiveLoopPacketReceived
             let received = ReceivedPacket packet t (clockOffsetPure packet t)
             atomically $ modifyTVar' inQueue ((:) received)
