@@ -176,7 +176,7 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
     threadDelayInterruptible ntpStatus $ fromIntegral $ ntpPollDelay ntpSettings
     where
         runThreads
-           = withAsync (send servers >> timeout inQueue) $ \sender ->
+           = withAsync (send servers) $ \sender ->
                withAsync (timeout inQueue)                 $ \delay ->
                  withAsync (checkReplies inQueue 6)          $ \revc ->                        
                     waitAnyCancel [sender, delay, revc]
@@ -192,11 +192,13 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
                 flushTBQueue q
             return $ SuitableReplies r
 
-        send (sock, addrs) = forM_ addrs $ \addr -> do
-            p <- mkNtpPacket
-            void $ Socket.ByteString.sendTo sock (LBS.toStrict $ encode p) (setNtpPort $ Socket.addrAddress addr)
-            traceWith tracer NtpTracePacketSent
-
+        send (sock, addrs) = do
+            forM_ addrs $ \addr -> do
+                p <- mkNtpPacket
+                void $ Socket.ByteString.sendTo sock (LBS.toStrict $ encode p) (setNtpPort $ Socket.addrAddress addr)
+                traceWith tracer NtpTracePacketSent
+            forever $ threadDelay 1_000_000
+            
 testClient :: IO ()
 testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings runApplication
   where
