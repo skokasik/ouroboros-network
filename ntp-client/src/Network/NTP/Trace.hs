@@ -43,7 +43,6 @@ data NtpTrace
     | NtpTraceRestartingClient
     | NtpTraceSocketReaderIOException IOException
     | NtpTraceQueryLoopIOException IOException
-    | NtpTraceResolveNow
     | NtpTraceSocketClosed
     | NtpOneshotClientIOError IOException
     deriving (Show)

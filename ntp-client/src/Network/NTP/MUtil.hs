@@ -140,6 +140,15 @@ socketReaderThread tracer inQueue socket = tryIOError $ forever $ do
             traceWith tracer NtpTraceReceiveLoopPacketReceived
             atomically $ writeTBQueue inQueue packet
 
+threadDelayInterruptible :: TVar NtpStatus -> Int -> IO ()
+threadDelayInterruptible tvar t
+    = race_
+       ( threadDelay t )
+       ( atomically $ do
+           s <- readTVar tvar
+           check $ s == NtpSyncPending
+       )
+
 data QueryOutcome
     = Timeout [NtpPacket]
     | SuitableReplies [NtpPacket]
@@ -164,14 +173,7 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
              atomically $ writeTVar ntpStatus $ NtpDrift $ minimum [0]
              
     traceWith tracer NtpTraceClientSleeping
-    race_
-              (threadDelay $ fromIntegral $ ntpPollDelay ntpSettings)
-              (do
-                atomically $ do
-                  s <- readTVar ntpStatus
-                  check $ s == NtpSyncPending
-                traceWith tracer NtpTraceResolveNow
-              )
+    threadDelayInterruptible ntpStatus $ fromIntegral $ ntpPollDelay ntpSettings
     where
         runThreads
            = withAsync (send servers >> timeout inQueue) $ \sender ->
@@ -218,7 +220,7 @@ ntpClientThread ::
     -> IO ()
 ntpClientThread tracer args@(_, ntpStatus) = forM_ restartDelay $ \t -> do
     traceWith tracer $ NtpTraceRestartDelay t
-    threadDelay $ t * 1_000_000
+    threadDelayInterruptible ntpStatus $ t * 1_000_000
     traceWith tracer NtpTraceRestartingClient
     oneshotClient tracer args
     atomically $ writeTVar ntpStatus NtpSyncUnavailable
