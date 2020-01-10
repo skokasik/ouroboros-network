@@ -29,22 +29,7 @@
           (hsPkgs.time)
           ];
         };
-      exes = {
-        "ntp-app" = {
-          depends = [
-            (hsPkgs.async)
-            (hsPkgs.base)
-            (hsPkgs.binary)
-            (hsPkgs.bytestring)
-            (hsPkgs.contra-tracer)
-            (hsPkgs.formatting)
-            (hsPkgs.network)
-            (hsPkgs.stm)
-            (hsPkgs.these)
-            (hsPkgs.time)
-            ];
-          };
-        };
+      exes = { "ntp-app" = {}; };
       tests = {
         "ntp-client-test" = {
           depends = [

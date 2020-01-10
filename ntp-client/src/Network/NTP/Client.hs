@@ -22,9 +22,9 @@ import           Control.Tracer
 import           Data.Binary (decodeOrFail, encode)
 import qualified Data.ByteString.Lazy as LBS
 import           Data.List (find)
-import           Network.Socket (AddrInfo,
+import           Network.Socket ( AddrInfo,
                      AddrInfoFlag (AI_ADDRCONFIG, AI_PASSIVE),
-                     Family (AF_INET, AF_INET6), PortNumber, SockAddr (..),
+                     Family (AF_INET), PortNumber, SockAddr (..), -- Family (AF_INET6),
                      Socket, SocketOption (ReuseAddr), SocketType (Datagram),
                      addrAddress, addrFamily, addrFlags, addrSocketType)
 import qualified Network.Socket as Socket
