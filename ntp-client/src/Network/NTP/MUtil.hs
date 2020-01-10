@@ -32,7 +32,6 @@ import qualified Network.Socket as Socket
 import qualified Network.Socket.ByteString as Socket.ByteString (recvFrom, sendTo)
 
 import           Network.NTP.Packet (NtpPacket, mkNtpPacket, ntpPacketSize, Microsecond, NtpOffset (..), getCurrentTime, clockOffsetPure)
--- import           Network.NTP.Packet ( , NtpPacket (..), clockOffset,
 import           Network.NTP.Trace (NtpTrace (..))
 
 
@@ -77,12 +76,13 @@ data ReceivedPacket = ReceivedPacket
     , receivedOffset    :: NtpOffset
     } deriving (Eq, Show)
 
+-- | Wait for at least three replies and report the minimum of the reported offsets.
 minimumOfThree :: ReportPolicy
 minimumOfThree l
     = if length l >= 3 then Report $ minimum $ map receivedOffset l
          else Wait
 
--- | Setup a NtpClient and run a computation that uses that client.
+-- | Setup a NtpClient and run a application that uses that client.
 withNtpClient :: Tracer IO NtpTrace -> NtpClientSettings -> (NtpClient -> IO a) -> IO a
 withNtpClient tracer ntpSettings action = do
     traceWith tracer NtpTraceStartNtpClient
@@ -159,8 +159,8 @@ socketReaderThread tracer inQueue socket = tryIOError $ forever $ do
             let received = ReceivedPacket packet t (clockOffsetPure packet t)
             atomically $ modifyTVar' inQueue $ maybeAppend received
     where
-      maybeAppend _ Nothing  = Nothing
-      maybeAppend p (Just l) = Just $ p:l
+        maybeAppend _ Nothing  = Nothing
+        maybeAppend p (Just l) = Just $ p:l
 
 threadDelayInterruptible :: TVar NtpStatus -> Int -> IO ()
 threadDelayInterruptible tvar t
@@ -197,49 +197,29 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
     threadDelayInterruptible ntpStatus $ fromIntegral $ ntpPollDelay ntpSettings
     where
         runThreads
-           = withAsync (send servers) $ \sender ->
-               withAsync timeout        $ \delay ->
-                 withAsync checkReplies   $ \revc ->
+           = withAsync (send servers >> loopForever)      $ \sender ->
+             withAsync (timeout      >> return Timeout)   $ \delay ->
+             withAsync (checkReplies >>= return . Result) $ \revc ->
                     waitAnyCancel [sender, delay, revc]
 
         timeout = do
             threadDelay $ fromIntegral $ ntpResponseTimeout ntpSettings
             traceWith tracer NtpTraceClientWaitingForRepliesTimeout
-            return Timeout
 
-        checkReplies = do
-            r <- atomically $ do
-                q <- readTVar inQueue
-                case q of
-                   Nothing -> error "Queue of incomming packets not available"
-                   Just l -> case (ntpReportPolicy ntpSettings) l of
-                       Wait -> retry
-                       Report r -> return r
-            return $ Result r
+        checkReplies = atomically $ do
+            q <- readTVar inQueue
+            case q of
+               Nothing -> error "Queue of incomming packets not available"
+               Just l -> case (ntpReportPolicy ntpSettings) l of
+                   Wait -> retry
+                   Report r -> return r
 
-        send (sock, addrs) = do
-            forM_ addrs $ \addr -> do
-                p <- mkNtpPacket
-                void $ Socket.ByteString.sendTo sock (LBS.toStrict $ encode p) (setNtpPort $ Socket.addrAddress addr)
-                traceWith tracer NtpTracePacketSent
-            forever $ threadDelay 1_000_000
+        send (sock, addrs) = forM_ addrs $ \addr -> do
+            p <- mkNtpPacket
+            void $ Socket.ByteString.sendTo sock (LBS.toStrict $ encode p) (setNtpPort $ Socket.addrAddress addr)
+            traceWith tracer NtpTracePacketSent
             
-testClient :: IO ()
-testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings runApplication
-  where
-    runApplication ntpClient = race_ getLine $ forever $ do
-        status <- atomically $ ntpGetStatus ntpClient
-        traceWith stdoutTracer $ show ("main"::String, status)
-        threadDelay 10_000_000
-        ntpTriggerUpdate ntpClient
-
-    settings :: NtpClientSettings
-    settings = NtpClientSettings
-        { ntpServers = ["0.de.pool.ntp.org","0.europe.pool.ntp.org","0.pool.ntp.org","1.pool.ntp.org","2.pool.ntp.org","3.pool.ntp.org"]
-        , ntpResponseTimeout = fromInteger 5_000_000
-        , ntpPollDelay       = fromInteger 300_000_000
-        , ntpReportPolicy    = minimumOfThree
-        }
+        loopForever = forever $ threadDelay 1_000_000
 
 -- TODO: maybe reset the delaytime if the oneshotClient did one sucessful query
 ntpClientThread ::
@@ -253,8 +233,11 @@ ntpClientThread tracer args@(_, ntpStatus) = forM_ restartDelay $ \t -> do
     oneshotClient tracer args
     atomically $ writeTVar ntpStatus NtpSyncUnavailable
     where
-      restartDelay :: [Int]
-      restartDelay = [0, 5, 10, 20, 60, 180, 600] ++ repeat 600
+        restartDelay :: [Int]
+        restartDelay = [0, 5, 10, 20, 60, 180, 600] ++ repeat 600
+
+-- | Setup and run the NTP client.
+-- In case of an IOError (for example when network interface goes down) cleanup and return.
 
 oneshotClient ::
        Tracer IO NtpTrace
@@ -285,3 +268,20 @@ oneshotClient tracer (ntpSettings, ntpStatus)
     release (sock, _, _) = do
         Socket.close sock
         traceWith tracer $ NtpTraceSocketClosed
+          
+testClient :: IO ()
+testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings runApplication
+  where
+    runApplication ntpClient = race_ getLine $ forever $ do
+        status <- atomically $ ntpGetStatus ntpClient
+        traceWith stdoutTracer $ show ("main"::String, status)
+        threadDelay 10_000_000
+        ntpTriggerUpdate ntpClient
+
+    settings :: NtpClientSettings
+    settings = NtpClientSettings
+        { ntpServers = ["0.de.pool.ntp.org","0.europe.pool.ntp.org","0.pool.ntp.org","1.pool.ntp.org","2.pool.ntp.org","3.pool.ntp.org"]
+        , ntpResponseTimeout = fromInteger 5_000_000
+        , ntpPollDelay       = fromInteger 300_000_000
+        , ntpReportPolicy    = minimumOfThree
+        }
