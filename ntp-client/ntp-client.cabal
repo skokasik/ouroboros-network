@@ -32,27 +32,6 @@ Library
                         GeneralizedNewtypeDeriving
                         OverloadedStrings
                         MonadFailDesugaring
-
--- Just for testing: to be removed later.
-Executable ntp-app
-  hs-source-dirs:       test, src
-  main-is:              NtpApp.hs
-  default-language:     Haskell2010
- ghc-options:          -Wall -Werror -fwarn-redundant-constraints
-  ghc-options:          -Wall
-  other-modules:        Network.NTP.Client
-                        Network.NTP.Packet
-                        Network.NTP.Trace
-  build-depends:        async
-                      , base
-                      , binary >= 0.8
-                      , bytestring
-                      , contra-tracer
-                      , formatting
-                      , network
-                      , stm
-                      , these
-                      , time
                         
 test-suite ntp-client-test
   hs-source-dirs:     test, src

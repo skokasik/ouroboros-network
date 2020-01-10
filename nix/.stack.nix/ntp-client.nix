@@ -29,7 +29,6 @@
           (hsPkgs.time)
           ];
         };
-      exes = { "ntp-app" = {}; };
       tests = {
         "ntp-client-test" = {
           depends = [
