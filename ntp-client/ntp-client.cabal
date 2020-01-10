@@ -11,11 +11,8 @@ cabal-version:       >=1.20
 
 Library
   exposed-modules:      Network.NTP.Client
-                        Network.NTP.Util
                         Network.NTP.Packet
                         Network.NTP.Trace
-                        Network.NTP.MUtil
-                        Network.NTP.MClient
   build-depends:        async
                       , base
                       , binary >= 0.8
@@ -44,9 +41,6 @@ Executable ntp-app
 -- ghc-options:          -Wall -Werror -fwarn-redundant-constraints
   ghc-options:          -Wall
   other-modules:        Network.NTP.Client
-                        Network.NTP.MClient
-                        Network.NTP.Util
-                        Network.NTP.MUtil
                         Network.NTP.Packet
                         Network.NTP.Trace
   build-depends:        async

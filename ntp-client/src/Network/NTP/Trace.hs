@@ -6,43 +6,19 @@ import           Network.NTP.Packet (Microsecond)
 data NtpTrace
     = NtpTraceStartNtpClient
     | NtpTraceClientActNow
-    | NtpTraceClientForceCheck
-    | NtpTraceClientAbort
-    | NtpTraceUpdateStatusNoResponses
-    | NtpTraceUpdateStatusClockOffset Microsecond
-    | NtpTraceSendLoopCollectedAllResponses
-    | NtpTraceSpawnNtpClientStarting
-    | NtpTraceSpawnNtpClientStarted
-    | NtpTraceSpawnNtpClientSocketsClosed
-    | NtpTraceSpawnNtpClientResolveDNS
-    | NtpTraceSpawnNtpClientResolvePending
-    | NtpTracePacketSent
-    | NtpTraceReceiveLoopDecodeError String
-    | NtpTraceReceiveLoopHandleIOException IOException
-    | NtpTraceReceiveLoopException
-    | NtpTraceReceiveLoopLatePacket
     | NtpTraceReceiveLoopPacketReceived
-    | NtpTraceReceiveLoopPacketDeltaTime Microsecond
-    | NtpTraceMkSocketsNoSockets
-    | NtpTraceMkSocketsIOExecption IOException
-    | NtpTraceResolvHostIOException IOException
-    | NtpTraceResolveHostNotResolved String
-    | NtpTraceResolveHostResolved String -- todo also log addr
-    | NtpTraceSocketCreated String String
-    | NtpTraceSendPacketNoMatchingSocket String String
-    | NtpTraceSentToIOException String IOException
-    | NtpTraceSentTryResend String
-    | NtpTraceSentNotRetrying
--- new code
-    | NtpTraceSocketReaderDecodeError String
     | NtpTraceClientStartQuery
+    | NtpTraceUpdateStatusQueryFailed
     | NtpTraceClientSleeping
     | NtpTraceClientWaitingForRepliesTimeout
-    | NtpTraceUpdateStatusQueryFailed
-    | NtpTraceRestartDelay Int
+    | NtpTracePacketSent
     | NtpTraceRestartingClient
+    | NtpTraceSocketClosed
+    | NtpTraceSocketReaderDecodeError String
     | NtpTraceSocketReaderIOException IOException
     | NtpTraceQueryLoopIOException IOException
-    | NtpTraceSocketClosed
-    | NtpOneshotClientIOError IOException
+    | NtpTraceOneshotClientIOError IOException
+    | NtpTraceUpdateStatusClockOffset Microsecond
+    | NtpTraceSocketCreated String String
+    | NtpTraceRestartDelay Int
     deriving (Show)
