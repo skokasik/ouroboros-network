@@ -22,9 +22,12 @@ import           Control.Tracer
 import           Data.Binary (decodeOrFail, encode)
 import qualified Data.ByteString.Lazy as LBS
 import           Data.List (find)
+import           Data.Maybe
+import           Data.These
+
 import           Network.Socket ( AddrInfo,
                      AddrInfoFlag (AI_ADDRCONFIG, AI_PASSIVE),
-                     Family (AF_INET), PortNumber, SockAddr (..), -- Family (AF_INET6),
+                     Family (AF_INET, AF_INET6), PortNumber, SockAddr (..),
                      Socket, SocketOption (ReuseAddr), SocketType (Datagram),
                      addrAddress, addrFamily, addrFlags, addrSocketType)
 import qualified Network.Socket as Socket
@@ -118,13 +121,17 @@ resolveHost host = Socket.getAddrInfo (Just hints) (Just host) Nothing
             , addrFlags = [AI_ADDRCONFIG]  -- since we use @AF_INET@ family
             }
 
-isV4Addr :: AddrInfo -> Bool
-isV4Addr addr = addrFamily addr == AF_INET
+firstAddr :: String -> [AddrInfo] -> IO (Maybe AddrInfo, Maybe AddrInfo)
+firstAddr name l = case (find isV4Addr l, find isV6Addr l) of
+    (Nothing, Nothing) -> ioError $ userError $ "lookup host failed :" ++ name
+    p -> return p
+    where
+        isV4Addr :: AddrInfo -> Bool
+        isV4Addr addr = addrFamily addr == AF_INET
 
-firstIPv4 :: String -> [AddrInfo] -> IO AddrInfo
-firstIPv4 name l = case find isV4Addr l of
-    Nothing -> ioError $ userError $ "host :" ++ name ++ "IPv4 addr not found"
-    Just addr -> return addr
+        isV6Addr :: AddrInfo -> Bool
+        isV6Addr addr = addrFamily addr == AF_INET6
+
 
 setNtpPort :: SockAddr ->  SockAddr
 setNtpPort addr = case addr of
@@ -138,13 +145,22 @@ setNtpPort addr = case addr of
 createAndBindSock
     :: Tracer IO NtpTrace
     -> AddrInfo
-    -> IO Socket
+    -> IO (Either IOError Socket)
 createAndBindSock tracer addr = do
-    sock <- Socket.socket (addrFamily addr) Datagram Socket.defaultProtocol
-    Socket.setSocketOption sock ReuseAddr 1
-    Socket.bind sock (addrAddress addr)
-    traceWith tracer $ NtpTraceSocketCreated (show $ addrFamily addr) (show $ addrAddress addr)
-    return sock
+    (tryIOError $ Socket.socket (addrFamily addr) Datagram Socket.defaultProtocol) >>= \case
+        Left err -> return $ Left err
+        Right sock -> (tryIOError $ trySock sock) >>= \case
+            Right () -> do
+                traceWith tracer $ NtpTraceSocketCreated (show $ addrFamily addr) (show $ addrAddress addr)
+                return $ Right sock
+            Left err -> do
+                Socket.close sock
+                return $ Left err
+    where
+        trySock s = do
+            Socket.setSocketOption s ReuseAddr 1
+            Socket.bind s (addrAddress addr)
+            -- todo : send testPacket ?
 
 socketReaderThread :: Tracer IO NtpTrace -> TVar (Maybe [ReceivedPacket]) -> Socket -> IO (Either IOError ())
 socketReaderThread tracer inQueue socket = tryIOError $ forever $ do
@@ -247,8 +263,8 @@ oneshotClient tracer (ntpSettings, ntpStatus)
       Right () -> return ()
       Left err -> traceWith tracer $ NtpTraceOneshotClientIOError err
   where
-    action :: (Socket, [AddrInfo], TVar (Maybe [ReceivedPacket])) -> IO ()
-    action (socket, addresses, inQueue) = do
+    action :: (These (Socket, [AddrInfo]) (Socket, [AddrInfo]), TVar (Maybe [ReceivedPacket])) -> IO ()
+    action (This (socket, addresses), inQueue) = do -- Todo
         err <- race (socketReaderThread tracer inQueue socket)
                   (runQueryLoop tracer ntpSettings ntpStatus inQueue (socket, addresses) )
         case err of
@@ -256,17 +272,39 @@ oneshotClient tracer (ntpSettings, ntpStatus)
             (Left  (Left e)) -> traceWith tracer $ NtpTraceSocketReaderIOException e
             _ -> error "unreachable"
 
-    acquire :: IO (Socket, [AddrInfo], TVar (Maybe [ReceivedPacket]))
+    acquire :: IO (These (Socket, [AddrInfo]) (Socket, [AddrInfo]), TVar (Maybe [ReceivedPacket]))
     acquire = do
-        dest <- forM (ntpServers ntpSettings) $ \server -> resolveHost server >>= firstIPv4 server
-        socket <- udpLocalAddresses >>= firstIPv4 "localhost" >>= createAndBindSock tracer
         inQueue <- atomically $ newTVar Nothing
-        return (socket, dest, inQueue)
+        (v4Servers,   v6Servers)   <- lookupServers $ ntpServers ntpSettings
+        (v4LocalAddr, v6LocalAddr) <- udpLocalAddresses >>= firstAddr "localhost"
+        v4Resources <- case v4Servers of
+            [] -> return Nothing
+            l  -> case v4LocalAddr of
+                Nothing -> return Nothing -- ? error or unreachable ?
+                Just addr -> createAndBindSock tracer addr >>= \case
+                    Right sock -> return $ Just (sock ,l)
+                    Left err -> return Nothing -- ??
 
-    release :: (Socket, [AddrInfo], TVar (Maybe [ReceivedPacket])) -> IO ()
-    release (sock, _, _) = do
+        v6Resources <- case v6Servers of
+            [] -> return Nothing
+            l  -> case v6LocalAddr of
+                Nothing -> return Nothing -- ? error or unreachable ?
+                Just addr -> createAndBindSock tracer addr >>= \case
+                    Right sock -> return $ Just (sock, l)
+                    Left err -> return Nothing -- ??
+
+        case (v4Resources, v6Resources) of
+            (Just v4, _ ) -> return (This v4, inQueue)
+
+    release :: (These (Socket, [AddrInfo]) (Socket, [AddrInfo]), TVar (Maybe [ReceivedPacket])) -> IO ()
+    release (This (sock, _) , _) = do --- Todo
         Socket.close sock
         traceWith tracer NtpTraceSocketClosed
+
+lookupServers :: [String] -> IO ([AddrInfo], [AddrInfo])
+lookupServers names = do
+   dests <- forM names $ \server -> resolveHost server >>= firstAddr server
+   return (mapMaybe fst dests, mapMaybe snd dests)
           
 testClient :: IO ()
 testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings runApplication
@@ -279,7 +317,8 @@ testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings ru
 
     settings :: NtpClientSettings
     settings = NtpClientSettings
-        { ntpServers = ["0.de.pool.ntp.org","0.europe.pool.ntp.org","0.pool.ntp.org","1.pool.ntp.org","2.pool.ntp.org","3.pool.ntp.org"]
+        { ntpServers = ["0.de.pool.ntp.org", "0.europe.pool.ntp.org", "0.pool.ntp.org"
+                       , "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org"]
         , ntpResponseTimeout = fromInteger 5_000_000
         , ntpPollDelay       = fromInteger 300_000_000
         , ntpReportPolicy    = minimumOfThree
