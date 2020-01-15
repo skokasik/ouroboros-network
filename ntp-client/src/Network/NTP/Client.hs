@@ -302,7 +302,7 @@ oneshotClient tracer (ntpSettings, ntpStatus)
            , TVar (Maybe [ReceivedPacket]) )
         -> IO ()
     action (sockets, inQueue) = do -- Todo
-        err <- race (startSocketReaders tracer inQueue sockets) -- $ fst $ undistrPairThese sockets)
+        err <- race (startSocketReaders tracer inQueue sockets) --  fst $ undistrPairThese sockets
                     (runQueryLoop tracer ntpSettings ntpStatus inQueue sockets )
         case err of
             (Left  (Left e)) -> traceWith tracer $ NtpTraceSocketReaderIOException e
@@ -347,7 +347,8 @@ oneshotClient tracer (ntpSettings, ntpStatus)
             Socket.close v6
             traceWith tracer NtpTraceSocketClosed
         These (v4, _) (v6, _) -> do
-            -- TODO !!
+            Socket.close v6
+            Socket.close v4
             traceWith tracer NtpTraceSocketClosed
 
 lookupServers :: [String] -> IO ([AddrInfo], [AddrInfo])
