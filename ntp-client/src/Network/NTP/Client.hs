@@ -24,17 +24,15 @@ import qualified Data.ByteString.Lazy as LBS
 import           Data.List (find)
 import           Data.Maybe
 import           Data.These
-
 import           Network.Socket ( AddrInfo,
                      AddrInfoFlag (AI_ADDRCONFIG, AI_PASSIVE),
                      Family (AF_INET, AF_INET6), PortNumber, SockAddr (..),
                      Socket, SocketOption (ReuseAddr), SocketType (Datagram),
                      addrAddress, addrFamily, addrFlags, addrSocketType)
 import qualified Network.Socket as Socket
-import qualified Network.Socket.ByteString as Socket.ByteString (recvFrom, sendTo)
-
-import           Network.NTP.Packet (NtpPacket, mkNtpPacket, ntpPacketSize, Microsecond
-                                    , NtpOffset (..), getCurrentTime, clockOffsetPure)
+import qualified Network.Socket.ByteString as Socket.ByteString (recvFrom, sendManyTo)
+import           Network.NTP.Packet (NtpPacket, mkNtpPacket, ntpPacketSize, Microsecond,
+                     NtpOffset (..), getCurrentTime, clockOffsetPure)
 import           Network.NTP.Trace (NtpTrace (..))
 
 
@@ -43,12 +41,12 @@ main = testClient
 
 data NtpClientSettings = NtpClientSettings
     { ntpServers         :: [String]
-      -- ^ list of servers addresses
+      -- ^ List of servers addresses.
     , ntpResponseTimeout :: Microsecond
-      -- ^ delay between making requests and response collection
+      -- ^ Timeout between sending NTP requests and response collection.
     , ntpPollDelay       :: Microsecond
-      -- ^ how long to wait between to send requests to the servers
-    , ntpReportPolicy  :: ReportPolicy
+      -- ^ How long to wait between two rounds of requests.
+    , ntpReportPolicy    :: ReportPolicy
     }
 
 data NtpClient = NtpClient
@@ -70,13 +68,13 @@ data NtpStatus =
 
 type ReportPolicy = [ReceivedPacket] -> Summary
 
-data Summary = Report NtpOffset | Wait
+data Summary = Report !NtpOffset | Wait
     deriving (Eq, Show)
 
 data ReceivedPacket = ReceivedPacket
-    { receivedPacket    :: NtpPacket
-    , receivedLocalTime :: Microsecond
-    , receivedOffset    :: NtpOffset
+    { receivedPacket    :: !NtpPacket
+    , receivedLocalTime :: !Microsecond
+    , receivedOffset    :: !NtpOffset
     } deriving (Eq, Show)
 
 -- | Wait for at least three replies and report the minimum of the reported offsets.
@@ -162,8 +160,10 @@ createAndBindSock tracer addr someDest = do
         trySock s = do
             Socket.setSocketOption s ReuseAddr 1
             Socket.bind s (addrAddress addr)
-            -- Send testPacket ?
-            void $ Socket.ByteString.sendTo s "test" (setNtpPort $ Socket.addrAddress someDest)
+            p <- mkNtpPacket
+            void $ Socket.ByteString.sendManyTo s (LBS.toChunks $ encode p)
+                                                     (setNtpPort $ Socket.addrAddress someDest)
+            traceWith tracer NtpTracePacketSent
 
 socketReaderThread
     :: Tracer IO NtpTrace
@@ -265,10 +265,10 @@ runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever
 
         send (sock, addrs) = forM_ addrs $ \addr -> do
             p <- mkNtpPacket
-            void $ Socket.ByteString.sendTo sock (LBS.toStrict $ encode p) (setNtpPort $ Socket.addrAddress addr)
+            void $ Socket.ByteString.sendManyTo sock (LBS.toChunks $ encode p) (setNtpPort $ Socket.addrAddress addr)
             traceWith tracer NtpTracePacketSent
             
-        loopForever = forever $ threadDelay 1_000_000
+        loopForever = forever $ threadDelay 500_000_000
 
 -- TODO: maybe reset the delaytime if the oneshotClient did one sucessful query
 ntpClientThread ::

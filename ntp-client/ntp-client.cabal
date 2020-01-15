@@ -25,12 +25,10 @@ Library
 
   hs-source-dirs:       src
   default-language:     Haskell2010
-  ghc-options:          -Wall 
+  ghc-options:          -Wall
   default-extensions:   DeriveDataTypeable
                         DeriveGeneric
                         GeneralizedNewtypeDeriving
-                        OverloadedStrings
-                        MonadFailDesugaring
                         
 test-suite ntp-client-test
   hs-source-dirs:     test, src
