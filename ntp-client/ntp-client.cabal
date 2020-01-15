@@ -13,16 +13,15 @@ Library
   exposed-modules:      Network.NTP.Client
                         Network.NTP.Packet
                         Network.NTP.Trace
-  build-depends:        async
-                      , base
-                      , binary >= 0.8
-                      , bytestring
-                      , contra-tracer
-                      , formatting
+  build-depends:        async           >=2.2 && <2.3
+                      , base            >=4.9 && <4.13
+                      , binary          >=0.8 && <0.9
+                      , bytestring      >=0.10 && <0.11
+                      , contra-tracer   >=0.1 && <0.2
                       , network
-                      , stm
+                      , stm             >=2.4 && <2.6
                       , these
-                      , time
+                      , time            >=1.6 && <1.10
 
   hs-source-dirs:       src
   default-language:     Haskell2010
@@ -38,8 +37,8 @@ test-suite ntp-client-test
   main-is:            Test.hs
   type:               exitcode-stdio-1.0
   other-modules:      Network.NTP.Packet
-  build-depends:        base
-                      , binary >= 0.8
+  build-depends:        base            >=4.9 && <4.13
+                      , binary
                       , time
                       , QuickCheck
                       , tasty

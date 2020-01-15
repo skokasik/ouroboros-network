@@ -22,7 +22,6 @@
           (hsPkgs.binary)
           (hsPkgs.bytestring)
           (hsPkgs.contra-tracer)
-          (hsPkgs.formatting)
           (hsPkgs.network)
           (hsPkgs.stm)
           (hsPkgs.these)
