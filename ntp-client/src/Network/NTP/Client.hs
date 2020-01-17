@@ -16,7 +16,7 @@ import           Control.Concurrent.Async
 import           Control.Concurrent.STM (STM, atomically, check, retry)
 import           Control.Concurrent.STM.TVar
 import           Control.Exception (bracket)
-import           System.IO.Error (tryIOError, userError, ioError)
+import           System.IO.Error (catchIOError, tryIOError, userError, ioError)
 import           Control.Monad (forever, void, forM, forM_)
 import           Control.Tracer
 import           Data.Binary (decodeOrFail, encode)
@@ -292,65 +292,15 @@ oneshotClient ::
        Tracer IO NtpTrace
     -> (NtpClientSettings, TVar NtpStatus)
     -> IO ()
-oneshotClient tracer (ntpSettings, ntpStatus)
-  = (tryIOError $ bracket acquire release action) >>= \case
-      Right () -> return ()
-      Left err -> traceWith tracer $ NtpTraceOneshotClientIOError err
-  where
-    action
-        :: ( These (Socket, [AddrInfo]) (Socket, [AddrInfo])
-           , TVar (Maybe [ReceivedPacket]) )
-        -> IO ()
-    action (sockets, inQueue) = do -- Todo
-        err <- race (startSocketReaders tracer inQueue sockets) --  fst $ undistrPairThese sockets
-                    (runQueryLoop tracer ntpSettings ntpStatus inQueue sockets )
-        case err of
-            (Left  (Left e)) -> traceWith tracer $ NtpTraceSocketReaderIOException e
-            (Right (Left e)) -> traceWith tracer $ NtpTraceQueryLoopIOException e
-            _ -> error "unreachable"
+oneshotClient tracer (ntpSettings, ntpStatus) = forever $ do
+    (v4Servers,   v6Servers)   <- lookupServers $ ntpServers ntpSettings
+    (v4LocalAddr, v6LocalAddr) <- udpLocalAddresses >>= firstAddr "localhost"
 
-    acquire :: IO (These (Socket, [AddrInfo]) (Socket, [AddrInfo]), TVar (Maybe [ReceivedPacket]))
-    acquire = do
-        inQueue <- atomically $ newTVar Nothing
-        (v4Servers,   v6Servers)   <- lookupServers $ ntpServers ntpSettings
-        (v4LocalAddr, v6LocalAddr) <- udpLocalAddresses >>= firstAddr "localhost"
-        v4Resources <- case v4Servers of
-            [] -> return Nothing
-            l@(remote:_)  -> case v4LocalAddr of
-                Nothing -> return Nothing -- ? error or unreachable ?
-                Just localAddr -> createAndBindSock tracer localAddr remote >>= \case
-                    Right sock -> return $ Just (sock ,l)
-                    Left _err -> return Nothing -- ??
-
-        v6Resources <- case v6Servers of
-            [] -> return Nothing
-            l@(remote:_)  -> case v6LocalAddr of
-                Nothing -> return Nothing -- ? error or unreachable ?
-                Just localAddr -> createAndBindSock tracer localAddr remote >>= \case
-                    Right sock -> return $ Just (sock, l)
-                    Left _err -> return Nothing -- ??
-
-        case (v4Resources, v6Resources) of
-            (Just v4, Nothing ) -> return (This v4, inQueue)
-            (Nothing, Just v6 ) -> return (That v6, inQueue)
-            (Just v4, Just v6 ) -> return (These v4 v6, inQueue)
-            (Nothing, Nothing ) -> ioError $ userError "Neither IPv4 nor IPv6 available"
-
-    release
-        :: (These (Socket, [AddrInfo]) (Socket, [AddrInfo]), TVar (Maybe [ReceivedPacket]))
-        -> IO ()
-    release (s , _) = case s of
-        This (v4, _) -> do
-            Socket.close v4
-            traceWith tracer NtpTraceSocketClosed
-        That (v6, _) -> do
-            Socket.close v6
-            traceWith tracer NtpTraceSocketClosed
-        These (v4, _) (v6, _) -> do
-            Socket.close v6
-            Socket.close v4
-            traceWith tracer NtpTraceSocketClosed
-
+    queryV6
+    queryV4
+    combine-results
+    sleep 30 minutes
+     
 lookupServers :: [String] -> IO ([AddrInfo], [AddrInfo])
 lookupServers names = do
    dests <- forM names $ \server -> resolveHost server >>= firstAddr server
@@ -373,3 +323,36 @@ testClient = withNtpClient (contramapM (return . show) stdoutTracer) settings ru
         , ntpPollDelay       = fromInteger 300_000_000
         , ntpReportPolicy    = minimumOfThree
         }
+
+socketAction ::
+       Tracer IO NtpTrace
+    -> AddrInfo
+    -> [AddrInfo]
+    -> IO (Either IOError [ReceivedPacket])
+socketAction tracer localAddr destAddrs inQueue
+    = bracket acquire release action
+  where
+    action :: Socket -> IO ()
+    action socket = do 
+        Socket.setSocketOption s ReuseAddr 1
+        Socket.bind s (addrAddress localAddr)
+        inQueue <- atomically $ newTVar []
+        race sender reader and timeout
+        -- err <- race (socketReaderThread tracer inQueue socket)
+                    (send socket)
+
+    send sock = forM_ destAddrs $ \addr -> do
+            p <- mkNtpPacket
+            tryIOError $ Socket.ByteString.sendManyTo sock
+                              (LBS.toChunks $ encode p) (setNtpPort $ Socket.addrAddress addr)
+            traceWith tracer NtpTracePacketSent
+            rateLimit sender
+
+    acquire :: IO Socket
+    acquire = catchIOError (Socket.socket (addrFamily localAddr) Datagram Socket.defaultProtocol)
+                 $ \err -> error "setupError" -- Todo rethrow setup exception
+
+    release :: Socket -> IO ()
+    release s = do
+        Socket.close s
+        traceWith tracer NtpTraceSocketClosed
