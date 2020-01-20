@@ -46,7 +46,7 @@ data NtpClientSettings = NtpClientSettings
       -- ^ Timeout between sending NTP requests and response collection.
     , ntpPollDelay       :: Microsecond
       -- ^ How long to wait between two rounds of requests.
-    , ntpReportPolicy    :: ReportPolicy
+    , ntpReportPolicy    :: [ReceivedPacket] -> Maybe NtpOffset
     }
 
 data NtpClient = NtpClient
@@ -66,11 +66,6 @@ data NtpStatus =
       -- `ntpResponseTimeout` or NTP was not configured.
     | NtpSyncUnavailable deriving (Eq, Show)
 
-type ReportPolicy = [ReceivedPacket] -> Summary
-
-data Summary = Report !NtpOffset | Wait
-    deriving (Eq, Show)
-
 data ReceivedPacket = ReceivedPacket
     { receivedPacket    :: !NtpPacket
     , receivedLocalTime :: !Microsecond
@@ -78,10 +73,10 @@ data ReceivedPacket = ReceivedPacket
     } deriving (Eq, Show)
 
 -- | Wait for at least three replies and report the minimum of the reported offsets.
-minimumOfThree :: ReportPolicy
+minimumOfThree :: [ReceivedPacket] ->Maybe NtpOffset
 minimumOfThree l
-    = if length l >= 3 then Report $ minimum $ map receivedOffset l
-         else Wait
+    = if length l >= 3 then Just $ minimum $ map receivedOffset l
+         else Nothing
 
 -- | Setup a NtpClient and run a application that uses that client.
 withNtpClient :: Tracer IO NtpTrace -> NtpClientSettings -> (NtpClient -> IO a) -> IO a
@@ -141,71 +136,6 @@ setNtpPort addr = case addr of
     ntpPort :: PortNumber
     ntpPort = 123
 
-createAndBindSock
-    :: Tracer IO NtpTrace
-    -> AddrInfo
-    -> AddrInfo
-    -> IO (Either IOError Socket)
-createAndBindSock tracer addr someDest = do
-    (tryIOError $ Socket.socket (addrFamily addr) Datagram Socket.defaultProtocol) >>= \case
-        Left err -> return $ Left err
-        Right sock -> (tryIOError $ trySock sock) >>= \case
-            Right () -> do
-                traceWith tracer $ NtpTraceSocketCreated (show $ addrFamily addr) (show $ addrAddress addr)
-                return $ Right sock
-            Left err -> do
-                Socket.close sock
-                return $ Left err
-    where
-        trySock s = do
-            Socket.setSocketOption s ReuseAddr 1
-            Socket.bind s (addrAddress addr)
-            p <- mkNtpPacket
-            void $ Socket.ByteString.sendManyTo s (LBS.toChunks $ encode p)
-                                                     (setNtpPort $ Socket.addrAddress someDest)
-            traceWith tracer NtpTracePacketSent
-
-socketReaderThread
-    :: Tracer IO NtpTrace
-    -> TVar (Maybe [ReceivedPacket])
-    -> Socket
-    -> IO (Either IOError ())
-socketReaderThread tracer inQueue socket = tryIOError $ forever $ do
-    (bs, _) <- Socket.ByteString.recvFrom socket ntpPacketSize
-    t <- getCurrentTime
-    case decodeOrFail $ LBS.fromStrict bs of
-        Left  (_, _, err) -> traceWith tracer $ NtpTraceSocketReaderDecodeError err
-        Right (_, _, packet) -> do
--- todo : filter bad packets, i.e. late packets and spoofed packets
-            traceWith tracer NtpTraceReceiveLoopPacketReceived
-            let received = ReceivedPacket packet t (clockOffsetPure packet t)
-            atomically $ modifyTVar' inQueue $ maybeAppend received
-    where
-        maybeAppend _ Nothing  = Nothing
-        maybeAppend p (Just l) = Just $ p:l
-
-startSocketReaders
-    :: Tracer IO NtpTrace
-    -> TVar (Maybe [ReceivedPacket])
-    -> These (Socket, [AddrInfo]) (Socket, [AddrInfo])
-    -> IO (Either IOError ())
-startSocketReaders tracer inQueue sockets = case sockets of
-    This (v4, _) -> do
-        socketReaderThread tracer inQueue v4
-    That (v6, _) -> do
-         socketReaderThread tracer inQueue v6
-    These (v4, _) (v6, _) -> do
-        err <- race (socketReaderThread tracer inQueue v4)
-                    (socketReaderThread tracer inQueue v6)
-        case err of
-            (Left  r@(Left e)) -> do
-                 traceWith tracer $ NtpTraceSocketReaderIOException e
-                 return r
-            (Right r@(Left e)) -> do
-                 traceWith tracer $ NtpTraceSocketReaderIOException e
-                 return r
-            _ -> error "unreachable"
-
 threadDelayInterruptible :: TVar NtpStatus -> Int -> IO ()
 threadDelayInterruptible tvar t
     = race_
@@ -214,61 +144,6 @@ threadDelayInterruptible tvar t
            s <- readTVar tvar
            check $ s == NtpSyncPending
        )
-
-data QueryOutcome = Timeout | Result NtpOffset
-
-runQueryLoop ::
-       Tracer IO NtpTrace
-    -> NtpClientSettings
-    -> TVar NtpStatus
-    -> TVar (Maybe [ReceivedPacket])
-    -> These (Socket, [AddrInfo]) (Socket, [AddrInfo])
-    -> IO (Either IOError ())
-runQueryLoop tracer ntpSettings ntpStatus inQueue servers = tryIOError $ forever $ do
-    traceWith tracer NtpTraceClientStartQuery
-    void $ atomically $ writeTVar inQueue $ Just []
-    (_id, outcome) <- runThreads
-    case outcome of
-        Timeout -> do
-            traceWith tracer NtpTraceUpdateStatusQueryFailed
-            atomically $ writeTVar ntpStatus NtpSyncUnavailable
-        Result offset -> do
-             traceWith tracer $ NtpTraceUpdateStatusClockOffset $ getNtpOffset offset
-             atomically $ writeTVar ntpStatus $ NtpDrift offset
-
-    void $ atomically $ writeTVar inQueue Nothing
-    traceWith tracer NtpTraceClientSleeping
-    threadDelayInterruptible ntpStatus $ fromIntegral $ ntpPollDelay ntpSettings
-    where
-        runThreads
-           = withAsync (sendBoth servers >> loopForever)      $ \sender ->
-             withAsync (timeout      >> return Timeout)   $ \delay ->
-             withAsync (checkReplies >>= return . Result) $ \revc ->
-                    waitAnyCancel [sender, delay, revc]
-
-        timeout = do
-            threadDelay $ fromIntegral $ ntpResponseTimeout ntpSettings
-            traceWith tracer NtpTraceClientWaitingForRepliesTimeout
-
-        checkReplies = atomically $ do
-            q <- readTVar inQueue
-            case q of
-               Nothing -> error "Queue of incomming packets not available"
-               Just l -> case (ntpReportPolicy ntpSettings) l of
-                   Wait -> retry
-                   Report r -> return r
-
-        sendBoth s = case s of
-            This v4 -> send v4
-            That v6 -> send v6
-            These v4 v6 -> send v6 >> send v4
-
-        send (sock, addrs) = forM_ addrs $ \addr -> do
-            p <- mkNtpPacket
-            void $ Socket.ByteString.sendManyTo sock (LBS.toChunks $ encode p) (setNtpPort $ Socket.addrAddress addr)
-            traceWith tracer NtpTracePacketSent
-            
-        loopForever = forever $ threadDelay 500_000_000
 
 -- TODO: maybe reset the delaytime if the oneshotClient did one sucessful query
 ntpClientThread ::
@@ -293,14 +168,30 @@ oneshotClient ::
     -> (NtpClientSettings, TVar NtpStatus)
     -> IO ()
 oneshotClient tracer (ntpSettings, ntpStatus) = forever $ do
+    traceWith tracer NtpTraceClientStartQuery
     (v4Servers,   v6Servers)   <- lookupServers $ ntpServers ntpSettings
     (v4LocalAddr, v6LocalAddr) <- udpLocalAddresses >>= firstAddr "localhost"
+    v4Replies <- runProtocol v4LocalAddr v4Servers
+    v6Replies <- runProtocol v6LocalAddr v6Servers
+    case (ntpReportPolicy ntpSettings) (v4Replies ++ v6Replies) of
+        Nothing -> do
+            traceWith tracer NtpTraceUpdateStatusQueryFailed
+            atomically $ writeTVar ntpStatus NtpSyncUnavailable
+        Just offset -> do
+            traceWith tracer $ NtpTraceUpdateStatusClockOffset $ getNtpOffset offset
+            atomically $ writeTVar ntpStatus $ NtpDrift offset
+    traceWith tracer NtpTraceClientSleeping
+    threadDelayInterruptible ntpStatus $ fromIntegral $ ntpPollDelay ntpSettings
 
-    queryV6
-    queryV4
-    combine-results
-    sleep 30 minutes
-     
+    where
+        runProtocol localAddr [] = return []
+        runProtocol Nothing   [] = return []
+        runProtocol (Just addr) servers = do
+            socketAction tracer addr servers >>= \case
+                Left err -> do
+                     return []
+                Right r -> return r
+
 lookupServers :: [String] -> IO ([AddrInfo], [AddrInfo])
 lookupServers names = do
    dests <- forM names $ \server -> resolveHost server >>= firstAddr server
@@ -329,25 +220,9 @@ socketAction ::
     -> AddrInfo
     -> [AddrInfo]
     -> IO (Either IOError [ReceivedPacket])
-socketAction tracer localAddr destAddrs inQueue
+socketAction tracer localAddr destAddrs
     = bracket acquire release action
   where
-    action :: Socket -> IO ()
-    action socket = do 
-        Socket.setSocketOption s ReuseAddr 1
-        Socket.bind s (addrAddress localAddr)
-        inQueue <- atomically $ newTVar []
-        race sender reader and timeout
-        -- err <- race (socketReaderThread tracer inQueue socket)
-                    (send socket)
-
-    send sock = forM_ destAddrs $ \addr -> do
-            p <- mkNtpPacket
-            tryIOError $ Socket.ByteString.sendManyTo sock
-                              (LBS.toChunks $ encode p) (setNtpPort $ Socket.addrAddress addr)
-            traceWith tracer NtpTracePacketSent
-            rateLimit sender
-
     acquire :: IO Socket
     acquire = catchIOError (Socket.socket (addrFamily localAddr) Datagram Socket.defaultProtocol)
                  $ \err -> error "setupError" -- Todo rethrow setup exception
@@ -356,3 +231,41 @@ socketAction tracer localAddr destAddrs inQueue
     release s = do
         Socket.close s
         traceWith tracer NtpTraceSocketClosed
+
+    action :: Socket -> IO (Either IOError [ReceivedPacket])
+    action socket = tryIOError $ do
+        Socket.setSocketOption socket ReuseAddr 1
+        Socket.bind socket (addrAddress localAddr)
+        inQueue <- atomically $ newTVar []
+        err <- withAsync (send socket  >> loopForever)      $ \sender ->
+               withAsync timeout    $ \delay ->
+               withAsync (reader socket inQueue ) $ \revc ->
+                    waitAnyCancel [sender, delay, revc]
+        atomically $ readTVar inQueue
+
+    send :: Socket -> IO ()
+    send sock = forM_ destAddrs $ \addr -> do
+        p <- mkNtpPacket
+        tryIOError $ Socket.ByteString.sendManyTo sock
+                          (LBS.toChunks $ encode p) (setNtpPort $ Socket.addrAddress addr)
+        traceWith tracer NtpTracePacketSent
+        threadDelay 100_000
+
+    loopForever = forever $ threadDelay maxBound
+
+    timeout = do
+        threadDelay 1_000_000
+        traceWith tracer NtpTraceClientWaitingForRepliesTimeout
+        return $ Right ()
+
+    reader :: Socket -> TVar [ReceivedPacket] -> IO (Either IOError ())
+    reader socket inQueue = tryIOError $ forever $ do
+        (bs, _) <- Socket.ByteString.recvFrom socket ntpPacketSize
+        t <- getCurrentTime
+        case decodeOrFail $ LBS.fromStrict bs of
+            Left  (_, _, err) -> traceWith tracer $ NtpTraceSocketReaderDecodeError err
+            Right (_, _, packet) -> do
+            -- todo : filter bad packets, i.e. late packets and spoofed packets
+                traceWith tracer NtpTraceReceiveLoopPacketReceived
+                let received = ReceivedPacket packet t (clockOffsetPure packet t)
+                atomically $ modifyTVar' inQueue ((:) received)
