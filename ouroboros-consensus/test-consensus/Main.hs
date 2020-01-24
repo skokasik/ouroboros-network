@@ -26,7 +26,7 @@ main = defaultMain tests
 
 tests :: TestTree
 tests =
-  testGroup "ouroboros-consensus"
+  testGroup "ouroboros-consensus" $
   [ Test.Consensus.BlockchainTime.SlotLengths.tests
   , Test.Consensus.BlockchainTime.WallClock.tests
   , Test.Consensus.ChainSyncClient.tests
@@ -44,4 +44,13 @@ tests =
   , Test.ThreadNet.RealPBFT.tests
   , Test.ThreadNet.DualPBFT.tests
   , Test.Util.Split.tests
+  ]
+  `seq`
+  [ Test.ThreadNet.PBFT.tests
+  , Test.ThreadNet.PBFT.tests
+  , Test.ThreadNet.PBFT.tests
+  , Test.ThreadNet.PBFT.tests
+  ]
+  `seq`
+  [ Test.ThreadNet.PBFT.tests
   ]
