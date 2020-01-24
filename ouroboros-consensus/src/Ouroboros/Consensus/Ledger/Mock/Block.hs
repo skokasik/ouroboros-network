@@ -285,7 +285,7 @@ instance (SimpleCrypto c, Typeable ext, SupportedBlock (SimpleBlock c ext))
   reapplyTx          = \_ -> updateSimpleUTxO
   reapplyTxSameState = \_ -> (mustSucceed . runExcept) .: updateSimpleUTxO
     where
-      mustSucceed (Left  _)  = error "reapplyTxSameState: unexpected error"
+      mustSucceed (Left  e)  = error $ "reapplyTxSameState: unexpected error: " <> show e
       mustSucceed (Right st) = st
 
 instance HasTxId (GenTx (SimpleBlock c ext)) where
