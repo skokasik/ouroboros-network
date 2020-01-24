@@ -91,6 +91,7 @@
         "analyse-db" = {
           depends = [
             (hsPkgs.base)
+            (hsPkgs.bytestring)
             (hsPkgs.cardano-binary)
             (hsPkgs.cardano-crypto-wrapper)
             (hsPkgs.cardano-ledger)
