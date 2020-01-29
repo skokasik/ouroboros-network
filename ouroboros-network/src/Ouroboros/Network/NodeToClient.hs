@@ -98,6 +98,7 @@ import           Ouroboros.Network.Subscription.Worker (LocalAddresses (..))
 --
 data NodeToClientProtocols = ChainSyncWithBlocksPtcl
                            | LocalTxSubmissionPtcl
+                           | LocalStateQueryPtcl
   deriving (Eq, Ord, Enum, Bounded, Show)
 
 -- | These are the actual wire format protocol numbers.
@@ -110,6 +111,7 @@ data NodeToClientProtocols = ChainSyncWithBlocksPtcl
 instance ProtocolEnum NodeToClientProtocols where
   fromProtocolEnum ChainSyncWithBlocksPtcl = MiniProtocolNum 5
   fromProtocolEnum LocalTxSubmissionPtcl   = MiniProtocolNum 6
+  fromProtocolEnum LocalStateQueryPtcl     = MiniProtocolNum 7
 
 instance MiniProtocolLimits NodeToClientProtocols where
   -- TODO: provide sensible limits

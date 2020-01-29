@@ -433,6 +433,7 @@ localResponderNetworkApplication NetworkApplication {..} =
     OuroborosResponderApplication $ \peer  ptcl -> case ptcl of
       ChainSyncWithBlocksPtcl -> naLocalChainSyncServer peer
       LocalTxSubmissionPtcl   -> naLocalTxSubmissionServer peer
+      LocalStateQueryPtcl     -> naLocalStateQueryServer peer
 
 
 -- | Example function which creates consensus mux applications, this is useful
