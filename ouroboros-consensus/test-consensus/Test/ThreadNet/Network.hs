@@ -482,8 +482,11 @@ runThreadNetwork ThreadNetworkArgs
                 let mSlot = pointSlot p
                 let k = SlotNo $ maxRollbacks $ protocolSecurityParam cfg
                 check $ case mSlot of
-                  Origin -> True
-                  At s   -> s >= (ebbSlotNo - min ebbSlotNo (2 * k))
+                  Origin -> 0 == ebbSlotNo
+                  -- this \"within 2k\" requirement simulates the
+                  -- 'anachronisticLedgerView' check, specifically the
+                  -- TooFarAhead case that uses an exclusive bound of now+2k
+                  At s   -> ebbSlotNo < s + 2 * k
                 bno <- ChainDB.getTipBlockNo chainDB
                 -- The EBB shares its BlockNo with its predecessor (if there is one)
                 pure (mSlot, fromWithOrigin genesisBlockNo bno, pointHash p)
