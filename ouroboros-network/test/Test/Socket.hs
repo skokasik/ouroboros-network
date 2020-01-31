@@ -31,7 +31,7 @@ import           Data.Time.Clock (UTCTime, getCurrentTime)
 import           Data.Void (Void)
 import qualified Network.Socket as Socket
 #if defined(mingw32_HOST_OS)
-import qualified System.Win32.Async as Win32.Async
+import qualified System.Win32.Async.Socket.ByteString as Win32.Async
 #else
 import qualified Network.Socket.ByteString.Lazy as Socket (sendAll)
 #endif
