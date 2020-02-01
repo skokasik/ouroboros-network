@@ -60,14 +60,14 @@ import           Test.ThreadNet.Util.NodeTopology
 
 tests :: TestTree
 tests = testGroup "DualPBFT" [
+      -- These tests are relatively expensive, due to the Byron generators, so
+      -- run fewer.
+      adjustOption (\(QuickCheckTests n) -> QuickCheckTests (1 `max` (div n 10))) $
       testProperty "convergence" $ prop_convergence
     ]
 
--- These tests are very expensive, due to the Byron generators
--- (100 tests take about 20 minutes)
--- We limit it to 10 tests for now.
 prop_convergence :: SetupDualPBft -> Property
-prop_convergence setup = withMaxSuccess 10 $
+prop_convergence setup =
     prop_general
       (countByronGenTxs . dualBlockMain)
       (setupSecurityParam      setup)
