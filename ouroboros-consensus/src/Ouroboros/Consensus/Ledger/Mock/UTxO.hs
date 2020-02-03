@@ -15,6 +15,7 @@ module Ouroboros.Consensus.Ledger.Mock.UTxO (
   , TxOut
   , Addr
   , Utxo
+  , Expiry (..)
     -- * Computing UTxO
   , InvalidInputs(..)
   , HasUtxo(..)
@@ -38,6 +39,7 @@ import           Cardano.Binary (ToCBOR (..))
 import           Cardano.Crypto.Hash
 import           Cardano.Prelude (NoUnexpectedThunks, UseIsNormalForm (..))
 
+import           Ouroboros.Network.Block (SlotNo)
 import           Ouroboros.Network.MockChain.Chain (Chain, toOldestFirst)
 
 import           Ouroboros.Consensus.Util
@@ -50,14 +52,23 @@ import           Ouroboros.Consensus.Ledger.Mock.Address
   Basic definitions
 -------------------------------------------------------------------------------}
 
-data Tx = UnsafeTx (Set TxIn) [TxOut]
+data Expiry
+  = DoNotExpire
+  | ExpireAtOnsetOf !SlotNo
+  deriving stock    (Show, Eq, Ord, Generic)
+  deriving anyclass (Serialise, NFData, NoUnexpectedThunks)
+
+instance Condense Expiry where
+  condense = show
+
+data Tx = UnsafeTx Expiry (Set TxIn) [TxOut]
   deriving stock    (Show, Eq, Ord, Generic)
   deriving anyclass (Serialise, NFData)
   deriving NoUnexpectedThunks via UseIsNormalForm Tx
 
-pattern Tx :: Set TxIn -> [TxOut] -> Tx
-pattern Tx ins outs <- UnsafeTx ins outs where
-  Tx ins outs = force $ UnsafeTx ins outs
+pattern Tx :: Expiry -> Set TxIn -> [TxOut] -> Tx
+pattern Tx expiry ins outs <- UnsafeTx expiry ins outs where
+  Tx expiry ins outs = force $ UnsafeTx expiry ins outs
 
 {-# COMPLETE Tx #-}
 
@@ -65,7 +76,7 @@ instance ToCBOR Tx where
   toCBOR = encode
 
 instance Condense Tx where
-  condense (Tx ins outs) = condense (ins, outs)
+  condense (Tx expiry ins outs) = condense (expiry, ins, outs)
 
 type TxId  = Hash ShortHash Tx
 type TxIn  = (TxId, Int)
@@ -95,8 +106,8 @@ utxo a = updateUtxo a Map.empty
 -------------------------------------------------------------------------------}
 
 instance HasUtxo Tx where
-  txIns     (Tx ins _outs) = ins
-  txOuts tx@(Tx _ins outs) =
+  txIns     (Tx _expiry ins _outs) = ins
+  txOuts tx@(Tx _expiry _ins outs) =
       Map.fromList $ map aux (zip [0..] outs)
     where
       aux :: (Int, TxOut) -> (TxIn, TxOut)
@@ -127,7 +138,8 @@ instance HasUtxo a => HasUtxo (Chain a) where
 
 -- | Transaction giving initial stake to the nodes
 genesisTx :: AddrDist -> Tx
-genesisTx addrDist = Tx mempty [(addr, 1000) | addr <- Map.keys addrDist]
+genesisTx addrDist =
+    Tx DoNotExpire mempty [(addr, 1000) | addr <- Map.keys addrDist]
 
 genesisUtxo :: AddrDist -> Utxo
 genesisUtxo addrDist =

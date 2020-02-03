@@ -43,6 +43,7 @@ prop_simple_pbft_convergence
         testConfig
         (Just $ roundRobinLeaderSchedule numCoreNodes numSlots)
         (expectedBlockRejection numCoreNodes)
+        (const (property True))
         testOutput
   where
     NumCoreNodes nn = numCoreNodes

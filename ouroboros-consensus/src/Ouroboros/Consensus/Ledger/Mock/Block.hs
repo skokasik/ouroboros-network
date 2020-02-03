@@ -286,8 +286,18 @@ instance (SimpleCrypto c, Typeable ext, SupportedBlock (SimpleBlock c ext))
 
   type ApplyTxErr (SimpleBlock c ext) = MockError (SimpleBlock c ext)
 
-  applyTx            = \_ -> updateSimpleUTxO
-  reapplyTx          = \_ -> updateSimpleUTxO
+  applyTx = reapplyTx
+
+  reapplyTx _ tx tl
+    | Mock.ExpireAtOnsetOf s <- expiry
+    , s <= tickedSlotNo = throwError $ MockExpired s tickedSlotNo
+    | otherwise         = updateSimpleUTxO tx tl
+    where
+      SimpleGenTx{simpleGenTx}        = tx
+      TickedLedgerState{tickedSlotNo} = tl
+
+      Mock.Tx expiry _ins _outs = simpleGenTx
+
   reapplyTxSameState = \_ -> (mustSucceed . runExcept) .: updateSimpleUTxO
     where
       mustSucceed (Left  _)  = error "reapplyTxSameState: unexpected error"

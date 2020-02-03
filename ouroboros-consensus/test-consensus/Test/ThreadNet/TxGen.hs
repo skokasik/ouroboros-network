@@ -11,7 +11,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import           GHC.Stack (HasCallStack)
 
-import           Cardano.Slotting.Slot (SlotNo)
+import           Ouroboros.Network.Block (SlotNo (..))
 
 import           Ouroboros.Consensus.Block
 import           Ouroboros.Consensus.Ledger.Abstract
@@ -58,8 +58,8 @@ class TxGen blk where
 -------------------------------------------------------------------------------}
 
 instance TxGen (SimpleBlock SimpleMockCrypto ext) where
-  testGenTx numCoreNodes _curSlotNo _cfg ledgerState =
-      mkSimpleGenTx <$> genSimpleTx addrs utxo
+  testGenTx numCoreNodes curSlotNo _cfg ledgerState =
+      mkSimpleGenTx <$> genSimpleTx curSlotNo addrs utxo
     where
       addrs :: [Addr]
       addrs = Map.keys $ mkAddrDist numCoreNodes
@@ -67,8 +67,8 @@ instance TxGen (SimpleBlock SimpleMockCrypto ext) where
       utxo :: Utxo
       utxo = mockUtxo $ simpleLedgerState ledgerState
 
-genSimpleTx :: forall m. MonadRandom m => [Addr] -> Utxo -> m Tx
-genSimpleTx addrs u = do
+genSimpleTx :: forall m. MonadRandom m => SlotNo -> [Addr] -> Utxo -> m Tx
+genSimpleTx curSlotNo addrs u = do
     let senders = Set.toList . Set.fromList . map fst . Map.elems $ u -- people with funds
     sender    <- genElt senders
     recipient <- genElt $ filter (/= sender) addrs
@@ -80,8 +80,12 @@ genSimpleTx addrs u = do
         outs         = if amount == fortune
             then [outRecipient]
             else [outRecipient, (sender, fortune - amount)]
-    return $ Tx ins outs
+    expiry <- (mkExpiry . SlotNo . fromIntegral) <$> generateBetween 2 10
+    return $ Tx expiry ins outs
   where
+    mkExpiry :: SlotNo -> Expiry
+    mkExpiry delta = ExpireAtOnsetOf $ curSlotNo + delta
+
     genElt :: HasCallStack => [a] -> m a
     genElt xs = do
         m <- generateElement xs

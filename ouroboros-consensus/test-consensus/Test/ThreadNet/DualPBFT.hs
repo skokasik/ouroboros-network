@@ -74,6 +74,7 @@ prop_convergence setup = withMaxSuccess 10 $
       (setupConfig             setup)
       (setupSchedule           setup)
       (setupExpectedRejections setup)
+      (const (property True))
       (setupTestOutput         setup)
 
 {-------------------------------------------------------------------------------

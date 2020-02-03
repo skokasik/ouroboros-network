@@ -271,10 +271,13 @@ prop_general ::
   -> TestConfig
   -> Maybe LeaderSchedule
   -> (BlockRejection blk -> Bool)
+     -- ^ Was this block rejection expected?
+  -> (blk -> Property)
+     -- ^ Test if the block is valid
   -> TestOutput blk
   -> Property
 prop_general countTxs k TestConfig{numSlots, nodeJoinPlan, nodeRestarts, nodeTopology}
-  mbSchedule expectedBlockRejection
+  mbSchedule expectedBlockRejection prop_valid_block
   TestOutput{testOutputNodes, testOutputTipBlockNos} =
     counterexample ("nodeChains: " <> unlines ("" : map (\x -> "  " <> condense x) (Map.toList nodeChains))) $
     counterexample ("nodeJoinPlan: " <> condense nodeJoinPlan) $
@@ -292,6 +295,7 @@ prop_general countTxs k TestConfig{numSlots, nodeJoinPlan, nodeRestarts, nodeTop
     tabulate "involves >=1 re-delegation" [show hasNodeRekey] $
     tabulate "average #txs/block" [show (range averageNumTxs)] $
     prop_no_unexpected_BlockRejections .&&.
+    prop_no_invalid_blocks .&&.
     prop_all_common_prefix
         maxForkLength
         (Map.elems nodeChains) .&&.
@@ -594,3 +598,18 @@ prop_general countTxs k TestConfig{numSlots, nodeJoinPlan, nodeRestarts, nodeTop
         average :: [Double] -> Double
         average [] = 0
         average xs = sum xs / fromIntegral (length xs)
+
+    -- The 'prop_valid_block' argument could, for example, check for no expired
+    -- transactions.
+    --
+    -- TODO apply to all 'TraceForgeAdopted' blocks, not just those in the
+    -- final chain?
+    prop_no_invalid_blocks :: Property
+    prop_no_invalid_blocks = conjoin $
+        [ counterexample ("In the final chain of " <> condense nid) $
+          MockChain.foldChain
+            (\acc blk -> prop_valid_block blk .&&. acc)
+            (property True)
+            finalChain
+        | (nid, finalChain) <- Map.toList nodeChains
+        ]

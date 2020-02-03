@@ -21,6 +21,7 @@ import           Data.Set (Set)
 import qualified Data.Set as Set
 import           GHC.Generics (Generic)
 
+import           Cardano.Slotting.Slot (SlotNo)
 import           Cardano.Crypto.Hash
 import           Cardano.Prelude (NoUnexpectedThunks)
 
@@ -45,7 +46,11 @@ data MockState blk = MockState {
 deriving instance Serialise (HeaderHash blk) => Serialise (MockState blk)
 
 data MockError blk =
-    MockInvalidInputs InvalidInputs
+    -- | The block expired in the first 'SlotNo', and it failed to validate
+    -- against a 'Ouroboros.Consensus.Ledger.Abstract.TickedLedgerState'
+    -- carrying the second 'SlotNo'.
+    MockExpired !SlotNo !SlotNo
+  | MockInvalidInputs InvalidInputs
   | MockInvalidHash (ChainHash blk) (ChainHash blk)
   deriving (Generic, NoUnexpectedThunks)
 

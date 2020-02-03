@@ -92,6 +92,7 @@ prop_simple_praos_convergence
       testConfig
       Nothing
       (const False)
+      (const (property True))
       testOutput
   where
     testOutput@TestOutput{testOutputNodes} =

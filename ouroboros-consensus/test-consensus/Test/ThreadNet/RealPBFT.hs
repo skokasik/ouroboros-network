@@ -336,6 +336,7 @@ prop_simple_real_pbft_convergence produceEBBs k
         testConfig
         (Just $ roundRobinLeaderSchedule numCoreNodes numSlots)
         (expectedBlockRejection k numCoreNodes nodeRestarts)
+        (const (property True))
         testOutput .&&.
     not (all Chain.null finalChains) .&&.
     conjoin (map (hasAllEBBs k numSlots produceEBBs) finalChains)
