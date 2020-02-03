@@ -53,6 +53,7 @@ import           Ouroboros.Consensus.Protocol.PBFT
 
 import           Test.ThreadNet.General
 import qualified Test.ThreadNet.RealPBFT as RealPBFT
+import qualified Test.ThreadNet.Ref.PBFT as Ref
 import           Test.ThreadNet.TxGen
 import           Test.ThreadNet.Util
 import           Test.ThreadNet.Util.NodeRestarts
@@ -68,13 +69,39 @@ tests = testGroup "DualPBFT" [
 
 prop_convergence :: SetupDualPBft -> Property
 prop_convergence setup =
+    (\prop -> if mightForgeInSlot0 then discard else prop) $
+    tabulate "Ref.PBFT result" [Ref.resultConstrName refResult] $
     prop_general
       (countByronGenTxs . dualBlockMain)
       (setupSecurityParam      setup)
-      (setupConfig             setup)
+      cfg
       (setupSchedule           setup)
+      (Just $ NumBlocks $ case refResult of
+         Ref.Forked{} -> 1
+         _            -> 0)
       (setupExpectedRejections setup)
       (setupTestOutput         setup)
+  where
+    cfg = setupConfig setup
+
+    refResult :: Ref.Result
+    refResult =
+      Ref.simulate (setupParams setup) (nodeJoinPlan cfg) (numSlots cfg)
+
+    -- The test infrastructure allows nodes to forge in slot 0; however, the
+    -- cardano-ledger-specs code causes @PBFTFailure (SlotNotAfterLastBlock
+    -- (Slot 0) (Slot 0))@ in that case. So we discard such tests.
+    mightForgeInSlot0 :: Bool
+    mightForgeInSlot0 = case refResult of
+      Ref.Forked _ m        -> any (0 `Set.member`) m
+      Ref.Nondeterministic  -> True
+      Ref.Outcomes outcomes -> case outcomes of
+        []    -> False
+        o : _ -> case o of
+          Ref.Absent  -> False
+          Ref.Nominal -> True
+          Ref.Unable  -> True
+          Ref.Wasted  -> True
 
 {-------------------------------------------------------------------------------
   Test setup

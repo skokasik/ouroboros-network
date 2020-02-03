@@ -313,7 +313,7 @@ test-suite test-consensus
                     Test.ThreadNet.PBFT
                     Test.ThreadNet.Praos
                     Test.ThreadNet.RealPBFT
-                    Test.ThreadNet.Ref.RealPBFT
+                    Test.ThreadNet.Ref.PBFT
                     Test.ThreadNet.TxGen
                     Test.ThreadNet.Util
                     Test.ThreadNet.Util.Expectations
@@ -330,6 +330,7 @@ test-suite test-consensus
                     Test.Util.Orphans.Arbitrary
                     Test.Util.Orphans.IOLike
                     Test.Util.Orphans.NoUnexpectedThunks
+                    Test.Util.Pam
                     Test.Util.QSM
                     Test.Util.QuickCheck
                     Test.Util.Range

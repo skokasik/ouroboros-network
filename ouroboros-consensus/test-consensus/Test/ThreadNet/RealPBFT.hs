@@ -9,12 +9,14 @@
 module Test.ThreadNet.RealPBFT (
     tests
     -- * To support the DualPBFT tests
+  , noEBBs
   , realPBftParams
   , genRealPBFTNodeJoinPlan
   , shrinkTestConfigSlotsOnly
   , expectedBlockRejection
   ) where
 
+import           Control.Monad (guard)
 import           Data.Coerce (coerce)
 import           Data.Foldable (find)
 import           Data.Map.Strict (Map)
@@ -54,6 +56,7 @@ import           Ouroboros.Storage.Common (EpochNo (..))
 
 import qualified Cardano.Binary
 import qualified Cardano.Chain.Common as Common
+import qualified Cardano.Chain.Block as Block
 import qualified Cardano.Chain.Delegation as Delegation
 import qualified Cardano.Chain.Genesis as Genesis
 import           Cardano.Chain.ProtocolConstants (kEpochSlots)
@@ -65,7 +68,7 @@ import qualified Test.Cardano.Chain.Genesis.Dummy as Dummy
 
 import           Test.ThreadNet.General
 import           Test.ThreadNet.Network (NodeOutput (..))
-import qualified Test.ThreadNet.Ref.RealPBFT as Ref
+import qualified Test.ThreadNet.Ref.PBFT as Ref
 import           Test.ThreadNet.Util
 import           Test.ThreadNet.Util.NodeJoinPlan
 import           Test.ThreadNet.Util.NodeRestarts
@@ -75,10 +78,18 @@ import           Test.Util.Orphans.Arbitrary ()
 import           Test.Util.Shrink (andId, dropId)
 import qualified Test.Util.Stream as Stream
 
+newtype K = K SecurityParam
+  deriving (Show)
+
+instance Arbitrary K where
+  arbitrary                    = (K . SecurityParam) <$> elements [1 .. 10]
+  shrink (K (SecurityParam k)) = (K . SecurityParam) <$> [ 1 .. k - 1 ]
+
 tests :: TestTree
 tests = testGroup "RealPBFT" $
-    [ testProperty "trivial join plan is considered deterministic" $
-          prop_deterministicPlan
+    [ testProperty "trivial join plan is considered deterministic"
+        $ \(K k) numCoreNodes ->
+          prop_deterministicPlan $ realPBftParams k numCoreNodes
     , localOption (QuickCheckTests 10) $   -- each takes about 0.5 seconds!
       testProperty "check setup"
         $ \numCoreNodes ->
@@ -244,9 +255,231 @@ tests = testGroup "RealPBFT" $
             , slotLengths  = defaultSlotLengths
             , initSeed     = Seed (4690259409304062007,9560140637825988311,3774468764133159390,14745090572658815456,7199590241247856333)
             }
+    , testProperty "correct EpochNumber in delegation certificate 1" $
+          -- Node 3 rekeys in slot 59, which is epoch 1. But Node 3 also leads
+          -- that slot, and it forged and adopted a block before restarting. So
+          -- the delegation transaction ends up in a block in slot 60, which is
+          -- epoch 2.
+          once $
+          let ncn4 = NumCoreNodes 4 in
+          prop_simple_real_pbft_convergence NoEBBs (SecurityParam 3) TestConfig
+            { numCoreNodes = ncn4
+            , numSlots     = NumSlots 72
+            , nodeJoinPlan = trivialNodeJoinPlan ncn4
+            , nodeRestarts = NodeRestarts (Map.fromList [(SlotNo 59,Map.fromList [(CoreNodeId 3,NodeRekey)])])
+            , nodeTopology = meshNodeTopology ncn4
+            , slotLengths  = defaultSlotLengths
+            , initSeed     = Seed (17364222041321661634,8266509462575908621,10410472349244348261,9332246846568887555,6178891282750652496)
+            }
+    , testProperty "correct EpochNumber in delegation certificate 2" $
+          -- Revealed the incorrectness of setting the dlg cert epoch based on
+          -- the slot in which the node rekeyed. It must be based on the slot
+          -- in which the next block will be successfully forged; hence adding
+          -- 'rekeyOracle' fixed this.
+          --
+          -- Node 2 joins and rekeys in slot 58, epoch 2. It also leads slot
+          -- 59. So its dlg cert tx will only be included in the block in slot
+          -- 60. However, since that's epoch 3, the tx is discarded as invalid
+          -- before the block is forged.
+          let ncn3 = NumCoreNodes 3 in
+          prop_simple_real_pbft_convergence ProduceEBBs (SecurityParam 2) TestConfig
+            { numCoreNodes = ncn3
+            , numSlots     = NumSlots 84
+            , nodeJoinPlan = NodeJoinPlan (Map.fromList [(CoreNodeId 0,SlotNo {unSlotNo = 1}),(CoreNodeId 1,SlotNo {unSlotNo = 1}),(CoreNodeId 2,SlotNo {unSlotNo = 58})])
+            , nodeRestarts = NodeRestarts (Map.fromList [(SlotNo {unSlotNo = 58},Map.fromList [(CoreNodeId 2,NodeRekey)])])
+            , nodeTopology = meshNodeTopology ncn3
+            , slotLengths  = defaultSlotLengths
+            , initSeed     = Seed {getSeed = (15151717355257504044,5938503171282920606,17557892055617026469,2625071732074633531,737988411488637670)}
+            }
+    , testProperty "repeatedly add the the dlg cert tx" $
+          -- Revealed the incorrectness of only adding dlg cert tx to the
+          -- mempool once (since it may be essentially immediately discarded);
+          -- hence adding it every time the ledger tip changes fixed this.
+          --
+          -- The failure was: PBftNotGenesisDelegate in Slot 95. It disappeared
+          -- with the mesh topology, which usually means subtle timings are
+          -- involved, unfortunately.
+          --
+          -- c2 rekeys in s83. c0 leads s84. But c2's dlg cert tx never reached
+          -- c0. It turns out that c2 told c0 it exists but then discarded it
+          -- before c0 actually requested it.
+          --
+          -- Excerpt of c2 trace events during s83:
+          --
+          -- > TraceLabelPeer (CoreId (CoreNodeId 0)) Send MsgRequestNext
+          -- > TraceLabelPeer (CoreId (CoreNodeId 0)) Send MsgReplyTxIds (BlockingReply ((dlgid: certificateid: fb50aa22,202) :| []))
+          -- > SwitchedToChain
+          -- >         { _prevChain = AnchoredFragment {anchorPoint = BlockPoint (SlotNo 25) 26851f52, unanchorFragment = ChainFragment (SFT (fromList
+          -- >            [ByronHeader {..., byronHeaderSlotNo = SlotNo {unSlotNo = 27}, byronHeaderHash = ByronHash {unByronHash = AbstractHash d50e0d2c}}
+          -- >            ,ByronHeader {..., byronHeaderSlotNo = SlotNo {unSlotNo = 28}, byronHeaderHash = ByronHash {unByronHash = AbstractHash 1523de50}}
+          -- >            ,ByronHeader {..., byronHeaderSlotNo = SlotNo {unSlotNo = 30}, byronHeaderHash = ByronHash {unByronHash = AbstractHash 77cb5dda}}
+          -- >            ,ByronHeader {..., byronHeaderSlotNo = SlotNo {unSlotNo = 31}, byronHeaderHash = ByronHash {unByronHash = AbstractHash 7efd3ec2}}
+          -- >            ,ByronHeader {..., byronHeaderSlotNo = SlotNo {unSlotNo = 33}, byronHeaderHash = ByronHash {unByronHash = AbstractHash 8903fa61}}
+          -- > {-an EBB-} ,ByronHeader {..., byronHeaderSlotNo = SlotNo {unSlotNo = 40}, byronHeaderHash = ByronHash {unByronHash = AbstractHash 43f8067e}}
+          -- >            ]))}
+          -- >         , _newChain = AnchoredFragment {anchorPoint = BlockPoint (SlotNo 27) d50e0d2c, unanchorFragment = ChainFragment (SFT (fromList
+          -- >            [ByronHeader {..., byronHeaderSlotNo = SlotNo {unSlotNo = 28}, byronHeaderHash = 1523de50}
+          -- >            ,ByronHeader {..., byronHeaderSlotNo = SlotNo {unSlotNo = 30}, byronHeaderHash = 77cb5dda}
+          -- >            ,ByronHeader {..., byronHeaderSlotNo = SlotNo {unSlotNo = 31}, byronHeaderHash = 7efd3ec2}
+          -- >            ,ByronHeader {..., byronHeaderSlotNo = SlotNo {unSlotNo = 33}, byronHeaderHash = 8903fa61}
+          -- >            ,ByronHeader {..., byronHeaderSlotNo = SlotNo {unSlotNo = 34}, byronHeaderHash = afa797b4}
+          -- >            ]))}}
+          --
+          -- That SwitchedToChain rolled back the slot 40 EBB (epoch 1) and
+          -- picked up a proper block in slot 34 (epoch 0) instead.
+          --
+          -- > TraceMempoolRemoveTxs (SyncWithLedger (At (SlotNo {unSlotNo = 35}))) [(dlg: Delegation.Certificate { w = #2, iVK = pub:a3219c1a, dVK = pub:1862f6a2 },MempoolDlgErr (WrongEpoch (EpochNumber {getEpochNumber = 0}) (EpochNumber {getEpochNumber = 2})))] (MempoolSize {msNumTxs = 0, msNumBytes = 0})
+          -- > TraceLabelPeer (CoreId (CoreNodeId 0)) Recv MsgBatchDone
+          -- > TraceLabelPeer (CoreId (CoreNodeId 0)) Recv MsgRequestTxs [dlgid: certificateid: fb50aa22]
+          -- > TraceLabelPeer (CoreId (CoreNodeId 0)) Send MsgReplyTxs []
+          prop_simple_real_pbft_convergence ProduceEBBs (SecurityParam 4) TestConfig
+            { numCoreNodes = NumCoreNodes 3
+            , numSlots     = NumSlots 96
+            , nodeJoinPlan = NodeJoinPlan $ Map.fromList [(CoreNodeId 0,SlotNo 0),(CoreNodeId 1,SlotNo 0),(CoreNodeId 2,SlotNo 83)]
+            , nodeRestarts = NodeRestarts $ Map.fromList [(SlotNo 83,Map.fromList [(CoreNodeId 2,NodeRekey)])]
+            , nodeTopology =    --   1 <-> 0 <-> 2
+                NodeTopology $ Map.fromList [(CoreNodeId 0,Set.fromList []),(CoreNodeId 1,Set.fromList [CoreNodeId 0]),(CoreNodeId 2,Set.fromList [CoreNodeId 0])]
+            , slotLengths  = defaultSlotLengths
+            , initSeed     = Seed {getSeed = (6137414258840919713,13743611065535662953,11200456599001708481,15059765168210441725,7592004320108020587)}
+            }
+    , testProperty "topology prevents timely dlg cert tx propagation" $
+          -- Caught a bug in the test infrastructure. If node X rekeys in slot
+          -- S and Y leads slot S+1, then either the topology must connect X
+          -- and Y directly, or Y must join before slot S. Otherwise, X
+          -- successfully propagates its dlg cert tx to the pre-existing nodes,
+          -- but Y won't pull it from them in time to include the tx in its
+          -- block for S+1. When Y joined in S, its mini protocols all failed
+          -- and were delayed to restart in the next slot (S+1). They do so,
+          -- but it forges its block in S+1 before the dlg cert tx arrives.
+          --
+          -- The failure was: PBftNotGenesisDelegate in Slot 49. It disappeared
+          -- with the mesh topology, which usually means subtle timings are
+          -- involved, unfortunately.
+          --
+          -- c3 and c4 join in s37. c4 rekeys in s37. c3 leads in s38.
+          --
+          -- The dlg cert tx does not arrive at c3 in time because of the
+          -- topology. When c3 and c4 join in s37, their mini protocol threads
+          -- that serve {c0,c1,c2} as clients fail and are scheduled to restart
+          -- at the onset of the next slot (s38). Since c3 and c4 are not
+          -- directly connected, and in particular the mini protocol instances
+          -- with clients in {c0,c1,c2} and server c4 are down, c4 cannot
+          -- communicate its dlg cert tx to c3 in time (it arrives in s38, but
+          -- after c3 has forged its block).
+          let ncn5 = NumCoreNodes 5 in
+          expectFailure $
+          once $
+          prop_simple_real_pbft_convergence ProduceEBBs (SecurityParam 2) TestConfig
+            { numCoreNodes = ncn5
+            , numSlots     = NumSlots 50
+            , nodeJoinPlan = NodeJoinPlan (Map.fromList [(CoreNodeId 0,SlotNo {unSlotNo = 0}),(CoreNodeId 1,SlotNo {unSlotNo = 0}),(CoreNodeId 2,SlotNo {unSlotNo = 0}),(CoreNodeId 3,SlotNo {unSlotNo = 37}),(CoreNodeId 4,SlotNo {unSlotNo = 37})])
+            , nodeRestarts = NodeRestarts (Map.fromList [(SlotNo {unSlotNo = 37},Map.fromList [(CoreNodeId 4,NodeRekey)])])
+            , nodeTopology = -- 3 <-> {0,1,2} <-> 4
+                NodeTopology (Map.fromList [(CoreNodeId 0,Set.fromList []),(CoreNodeId 1,Set.fromList [CoreNodeId 0]),(CoreNodeId 2,Set.fromList [CoreNodeId 0, CoreNodeId 1]),(CoreNodeId 3,Set.fromList [CoreNodeId 0,CoreNodeId 1,CoreNodeId 2]),(CoreNodeId 4,Set.fromList [CoreNodeId 0,CoreNodeId 1,CoreNodeId 2])])
+            , slotLengths  = defaultSlotLengths
+            , initSeed = Seed {getSeed = (13428626417421372024,5113871799759534838,13943132470772613446,18226529569527889118,4309403968134095151)}
+            }
+    , testProperty "simulated TooFarAhead check for EBB producer, Issue #1524" $
+          -- See Issue #1524
+          prop_simple_real_pbft_convergence ProduceEBBs (SecurityParam 2) TestConfig
+            { numCoreNodes = NumCoreNodes 5
+            , numSlots     = NumSlots 25
+            , nodeJoinPlan = NodeJoinPlan $ Map.fromList
+                [ (CoreNodeId 0, SlotNo 0)
+                , (CoreNodeId 1, SlotNo 0)
+                , (CoreNodeId 2, SlotNo 0)
+                , (CoreNodeId 3, SlotNo 23)
+                , (CoreNodeId 4, SlotNo 23)
+                ]
+            , nodeRestarts = noRestarts
+            , nodeTopology = NodeTopology $ Map.fromList
+                -- linear
+                [ (CoreNodeId 0, Set.fromList [])
+                , (CoreNodeId 1, Set.fromList [CoreNodeId 0])
+                , (CoreNodeId 2, Set.fromList [CoreNodeId 1])
+                , (CoreNodeId 3, Set.fromList [CoreNodeId 2])
+                , (CoreNodeId 4, Set.fromList [CoreNodeId 3])
+                ]
+            , slotLengths  = defaultSlotLengths
+            , initSeed     = Seed (5350618460041042011,17249500634773416430,627453784895675585,11394379884786862668,2159506486501704481)
+            }
+    , testProperty "need to avoid fork after later EBB" $
+          once $
+          -- We expected this case to fail. The circumstance is niche enough
+          -- that we've added a 'discardBecauseOfForkAfterEBB' guard to
+          -- 'genRealPBFTNodeJoinPlan' in order to avoid similar cases.
+          --
+          -- = The specific failure
+          --
+          -- With k = 2, n = 2, and c1 joining in the final slot, s21:
+          --
+          -- > c0 ends with
+          -- > (header: ( hash: ab1d17f4950a412d, slot: 18)) :>
+          -- > (ebb: 1,   hash: 31a3471329346182) :>
+          -- > (header: ( hash: 73551a67a2c461ac, slot: 20))
+          --
+          -- > c1 ends with
+          -- > (header: ( hash: ab1d17f4950a412d, slot: 18)) :>
+          -- > (ebb: 1,   hash: 31a3471329346182) :>
+          -- > (header: ( hash: 6477321d31e8844e, slot: 21))
+          --
+          -- Ref.PBFT assumes Wasted for s21, since the existing chain has more
+          -- than 1 block. However, that logic assumes that a node always
+          -- forges its block before syncing enough blocks to be relevant.
+          -- That's almost always true, but the test infrastructure currently
+          -- prevents a block from forging until it's up-to-date with respect
+          -- to EBBs, and in this case that particular logic makes c1 wait long
+          -- enough to forge that it actually makes a competitive chain.
+          --
+          -- Specifically, c1 joins in s21 and begins waiting until its ChainDB
+          -- tip is greater than s17, since that's the earliest it could forge
+          -- the s20 EBB. In this case, the first slot >= s17 with a block is
+          -- s18, an c1's forkEbbProducer thread therefore forges an EBB on top
+          -- of the s18 block. c1 then normally forges its s21 block atop that.
+          -- And that new chain is competetive with the old one.
+          --
+          -- = Discarding similar cases
+          --
+          -- The undesirable behavior arises when a node joins and leads during
+          -- the last slot, and the net's chain at the onset of that slot has a
+          -- suffix of shape @X :> Y :> EBB :> Z@ where @blockSlot EBB >=
+          -- blockSlot X + 2k@. Once the joining node syncs Y, it will forge a
+          -- copy of the EBB and then forge an alternative successor Z'. (Or
+          -- maybe X doesn't even exist (i.e. is Origin), though with epoch
+          -- size fixed at 10k, that can't currently happen.)
+          --
+          -- If this is not the last slot, then this alternative chain will be
+          -- discarded once the next node leads; so it's still 'Ref.Wasted',
+          -- but not by the end of its join slot as it usually is. However, if
+          -- the next node to lead also joins in this slot, it's possible that
+          -- that node will extend Z' instead of Z and the net will then switch
+          -- to Z', which would violate the PBFT simulator's intended
+          -- semantics. So our 'discard' check does not limit itself to the
+          -- last slot (tracking the non-determinism instead would require
+          -- something like 'Ref.PBFT.simulateShort').
+          --
+          -- See 'discardBecauseOfForkAfterEBB'.
+          --
+          -- TODO can we somehow adjust the whole @forkEbbProducer@ scheme to
+          -- avoid this case altogether?
+          --
+          expectFailure $
+          once $
+          let ncn2 = NumCoreNodes 2 in
+          unguarded_prop_simple_real_pbft_convergence ProduceEBBs (SecurityParam 2) TestConfig
+            { numCoreNodes = ncn2
+            , numSlots     = NumSlots 22
+            , nodeJoinPlan = NodeJoinPlan (Map.fromList [(CoreNodeId 0,SlotNo {unSlotNo = 0}),(CoreNodeId 1,SlotNo {unSlotNo = 21})])
+            , nodeRestarts = noRestarts
+            , nodeTopology = meshNodeTopology ncn2
+            , slotLengths  = defaultSlotLengths
+            , initSeed     = Seed {getSeed = (11230515745126725611,17023640443344827504,12175165143571139209,1732951060216843643,1600055577042702310)}
+            }
     , testProperty "simple convergence" $
           \produceEBBs ->
-          forAll (SecurityParam <$> elements [5, 10])
+          -- TODO k > 1 as a workaround for Issue #1511.
+          --
+          forAll (SecurityParam <$> elements [2 .. 10])
             $ \k ->
           forAllShrink
               (genRealPBFTTestConfig k)
@@ -258,10 +491,14 @@ tests = testGroup "RealPBFT" $
     defaultSlotLengths :: SlotLengths
     defaultSlotLengths = singletonSlotLengths (SlotLength 1)
 
-prop_deterministicPlan :: NumSlots -> NumCoreNodes -> Property
-prop_deterministicPlan numSlots numCoreNodes =
-  property $
-  Ref.deterministicPlan numSlots (trivialNodeJoinPlan numCoreNodes)
+prop_deterministicPlan :: PBftParams -> NumSlots -> NumCoreNodes -> Property
+prop_deterministicPlan params numSlots numCoreNodes =
+    property $ case Ref.simulate params njp numSlots of
+      Ref.Forked{}         -> False
+      Ref.Outcomes{}       -> True
+      Ref.Nondeterministic -> False
+  where
+    njp = trivialNodeJoinPlan numCoreNodes
 
 prop_setup_coreNodeId ::
      NumCoreNodes
@@ -349,16 +586,57 @@ prop_simple_real_pbft_convergence :: ProduceEBBs
                                   -> TestConfig
                                   -> Property
 prop_simple_real_pbft_convergence produceEBBs k
-  testConfig@TestConfig{numCoreNodes, numSlots, nodeRestarts, initSeed} =
+  testConfig@TestConfig
+    { numCoreNodes
+    , numSlots
+    , nodeJoinPlan
+    }
+  | shouldDiscard = discard
+  | otherwise =
+  unguarded_prop_simple_real_pbft_convergence produceEBBs k testConfig
+  where
+    shouldDiscard =
+      discardBecauseOfForkAfterEBB produceEBBs params numSlots nodeJoinPlan
+
+    params :: PBftParams
+    params = realPBftParams k numCoreNodes
+
+unguarded_prop_simple_real_pbft_convergence
+  :: ProduceEBBs -> SecurityParam -> TestConfig -> Property
+unguarded_prop_simple_real_pbft_convergence produceEBBs k
+  testConfig@TestConfig
+    { numCoreNodes
+    , numSlots
+    , nodeJoinPlan
+    , nodeRestarts
+    , initSeed
+    } =
     tabulate "produce EBBs" [show produceEBBs] $
+    tabulate "Ref.PBFT result" [Ref.resultConstrName refResult] $
+    counterexample ("params: " <> show params) $
+    counterexample ("Ref.PBFT result: " <> show refResult) $
+    counterexample
+      ("delegation certificates: " <> show [
+            (,) nid $
+            mapMaybe (>>= \x@(_, dlgs) -> if null dlgs then Nothing else Just x) $
+            [ case Byron.byronBlockRaw blk of
+                Block.ABOBBlock b    -> Just (Block.blockSlot b, Delegation.getPayload $ Block.blockDlgPayload b)
+                Block.ABOBBoundary _ -> Nothing
+            | blk <- Chain.chainToList ch
+            ]
+          | (nid, ch) <- finalChains
+          ]) $
     prop_general
         Byron.countByronGenTxs
         k
         testConfig
         (Just $ roundRobinLeaderSchedule numCoreNodes numSlots)
+        (Just $ NumBlocks $ case refResult of
+           Ref.Forked{} -> 1
+           _            -> 0)
         (expectedBlockRejection k numCoreNodes nodeRestarts)
         testOutput .&&.
-    not (all Chain.null finalChains) .&&.
+    not (all (Chain.null . snd) finalChains) .&&.
     conjoin (map (hasAllEBBs k numSlots produceEBBs) finalChains)
   where
     testOutput =
@@ -369,7 +647,20 @@ prop_simple_real_pbft_convergence produceEBBs k
             , nodeInfo = \nid -> protocolInfo $
                 mkProtocolRealPBFT params nid genesisConfig genesisSecrets
             , rekeying = Just Rekeying
-              { rekeyUpd      = mkRekeyUpd genesisConfig genesisSecrets
+              { rekeyOracle   = \cid s ->
+                  let nominalSlots = case refResult of
+                        Ref.Forked{}           -> Set.empty
+                        Ref.Outcomes outcomes  ->
+                          Set.fromList $
+                          [ s'
+                          | (Ref.Nominal, s') <- zip outcomes [0..]
+                            -- ignore the 'Ref.Nominal's disrupted by the
+                            -- rekey; see comment on 'refResult'
+                          , cid /= Ref.mkLeaderOf params s'
+                          ]
+                        Ref.Nondeterministic{} -> Set.empty
+                  in Set.lookupGT s nominalSlots
+              , rekeyUpd      = mkRekeyUpd genesisConfig genesisSecrets
               , rekeyFreshSKs =
                   let prj  = Crypto.hashVerKey . Crypto.deriveVerKeyDSIGN
                       acc0 =   -- the VKs of the operational keys at genesis
@@ -386,8 +677,13 @@ prop_simple_real_pbft_convergence produceEBBs k
               }
             }
 
-    finalChains :: [Chain ByronBlock]
-    finalChains = Map.elems $ nodeOutputFinalChain <$> testOutputNodes testOutput
+    -- NOTE: If a node is rekeying, then the 'Ref.Outcome' case will include
+    -- some 'Ref.Nominal' outcomes that should actually be 'Ref.Unable'.
+    refResult :: Ref.Result
+    refResult = Ref.simulate params nodeJoinPlan numSlots
+
+    finalChains :: [(NodeId, Chain ByronBlock)]
+    finalChains = Map.toList $ nodeOutputFinalChain <$> testOutputNodes testOutput
 
     params :: PBftParams
     params = realPBftParams k numCoreNodes
@@ -395,6 +691,56 @@ prop_simple_real_pbft_convergence produceEBBs k
     genesisConfig  :: Genesis.Config
     genesisSecrets :: Genesis.GeneratedSecrets
     (genesisConfig, genesisSecrets) = generateGenesisConfig params
+
+-- | If 'True', this test case should be discarded, since the monkey patch for
+-- generating EBBs will (at least temporarily) introduce a fork into the net
+-- that 'Ref.simulate' does not anticipate.
+--
+discardBecauseOfForkAfterEBB
+  :: ProduceEBBs -> PBftParams -> NumSlots -> NodeJoinPlan -> Bool
+discardBecauseOfForkAfterEBB produceEBBs params numSlots nodeJoinPlan
+  = forgingEBBs && case refResult of
+    Ref.Forked{}           -> False
+    Ref.Outcomes outcomes  ->
+      let twoK           = SlotNo $ 2 * maxRollbacks pbftSecurityParam
+          NodeJoinPlan m = nodeJoinPlan
+
+          ebbSlotBefore (SlotNo s) =
+            -- c.f. Genesis.configEpochSlots
+            let tenK = 10 * maxRollbacks pbftSecurityParam
+            in SlotNo $ (s `div` tenK) * tenK
+
+          -- TODO confirm that the 'Ref.Nominal's disrupted by a rekey only lead
+          -- to false positives; see comment on 'refResult'
+          nominalSlots = Set.fromList $
+              [ s' | (Ref.Nominal, s') <- zip outcomes [0..] ]
+      in
+      flip any (Map.toList m) $ \(cid, joinSlot) ->
+      fromMaybe False $ do
+
+        -- cid leads when it joins
+        guard $ cid == Ref.mkLeaderOf params joinSlot
+        -- @... :> X :> Y :> EBB :> Z@
+        sZ <- Set.lookupLT joinSlot nominalSlots
+        sY <- Set.lookupLT sZ       nominalSlots
+        sX <- Set.lookupLT sY       nominalSlots
+        let ebbSlot = ebbSlotBefore joinSlot
+        guard $ sY < ebbSlot && ebbSlot <= sZ
+
+        -- cid can't forge its EBB copy until it syncs Y; the EBB would
+        -- be TooFarAhead of X
+        pure $ not $ ebbSlot < sX + twoK
+    Ref.Nondeterministic{} -> False
+  where
+    PBftParams{pbftSecurityParam} = params
+
+    refResult :: Ref.Result
+    refResult = Ref.simulate params nodeJoinPlan numSlots
+
+    forgingEBBs :: Bool
+    forgingEBBs = case produceEBBs of
+      NoEBBs      -> False
+      ProduceEBBs -> True
 
 -- | Whether to produce EBBs in the tests or not
 --
@@ -408,6 +754,11 @@ data ProduceEBBs
     -- also produce an EBB at the start of each subsequent epoch.
   deriving (Eq, Show)
 
+-- | Exported alias for 'NoEBBs'.
+--
+noEBBs :: ProduceEBBs
+noEBBs = NoEBBs
+
 instance Arbitrary ProduceEBBs where
   arbitrary = elements [NoEBBs, ProduceEBBs]
   shrink NoEBBs      = []
@@ -416,10 +767,10 @@ instance Arbitrary ProduceEBBs where
 hasAllEBBs :: SecurityParam
            -> NumSlots
            -> ProduceEBBs
-           -> Chain ByronBlock
+           -> (NodeId, Chain ByronBlock)
            -> Property
-hasAllEBBs k (NumSlots t) produceEBBs c =
-    counterexample ("Missing or unexpected EBBs in " <> condense c) $
+hasAllEBBs k (NumSlots t) produceEBBs (nid, c) =
+    counterexample ("Missing or unexpected EBBs in " <> condense (nid, c)) $
     actual === expected
   where
     expected :: [EpochNo]
@@ -534,10 +885,12 @@ genRealPBFTNodeJoinPlan params numSlots@(NumSlots t)
     ++ show (params, numSlots)
   | otherwise      =
     go (NodeJoinPlan Map.empty) Ref.emptyState
-      `suchThat` Ref.deterministicPlan numSlots
+      `suchThat` (\njp -> Ref.definitelyEnoughBlocks params $
+                          Ref.simulate params njp numSlots)
+
         -- This suchThat might loop a few times, but it should always
         -- eventually succeed, since the plan where all nodes join immediately
-        -- satisifies it.
+        -- satisfies it.
         --
         -- In a run of 7000 successful RealPBFT tests, this 'suchThat' retried:
         --
@@ -551,7 +904,8 @@ genRealPBFTNodeJoinPlan params numSlots@(NumSlots t)
     PBftParams{pbftNumNodes} = params
     NumCoreNodes n           = pbftNumNodes
 
-    lastSlot = SlotNo $ fromIntegral $ t - 1
+    sentinel = SlotNo t
+    lastSlot = pred sentinel   -- note the t guard above
 
     go ::
          NodeJoinPlan
@@ -575,12 +929,12 @@ genRealPBFTNodeJoinPlan params numSlots@(NumSlots t)
             -- @nid@ can at least join \"immediately\" wrt to @nodeJoinPlan@.
             --
             -- The base case is that the empty join plan and empty state are
-            -- viable, which assumes that the invariant would be satisified if
+            -- viable, which assumes that the invariant would be satisfied if
             -- all nodes join in slot 0. For uninterrupted round-robin, that
             -- merely requires @n * floor (k * t) >= k@. (TODO Does that
             -- *always* suffice?)
         let check s' =
-                Ref.viable params lastSlot
+                Ref.viable params sentinel
                     (NodeJoinPlan (Map.insert nid s' m))
                     st
             lo = Ref.nextSlot st
@@ -621,9 +975,9 @@ genRealPBFTTestConfig k = do
 
     let params = realPBftParams k numCoreNodes
     nodeJoinPlan <- genRealPBFTNodeJoinPlan params numSlots
-    nodeRestarts <- genNodeRestarts nodeJoinPlan numSlots >>=
-                    genNodeRekeys params nodeJoinPlan numSlots
     nodeTopology <- genNodeTopology numCoreNodes
+    nodeRestarts <- genNodeRestarts nodeJoinPlan numSlots >>=
+                    genNodeRekeys params nodeJoinPlan nodeTopology numSlots
 
     initSeed <- arbitrary
 
@@ -690,45 +1044,54 @@ shrinkTestConfigSlotsOnly TestConfig
 genNodeRekeys
   :: PBftParams
   -> NodeJoinPlan
+  -> NodeTopology
   -> NumSlots
   -> NodeRestarts
   -> Gen NodeRestarts
-genNodeRekeys params (NodeJoinPlan njp) numSlots@(NumSlots t)
+genNodeRekeys params nodeJoinPlan nodeTopology numSlots@(NumSlots t)
   nodeRestarts@(NodeRestarts nrs)
   | t <= 0    = pure nodeRestarts
   | otherwise =
-    -- The necessary conditions are pretty rare, so favor adding a 'NodeRekey'
-    -- when we can. But not always.
+    -- The necessary conditions are relatively rare, so favor adding a
+    -- 'NodeRekey' when we can. But not always.
     (\x -> frequency [(2, pure nodeRestarts), (8, x)]) $
     -- TODO rekey nodes other than the last
     -- TODO rekey more than one node
     -- TODO rekey a node in a slot other than its join slot
     case Map.lookupMax njp of
-      Just (nid, jslot)
+      Just (cid, jslot)
             -- last node joins after first epoch, ...
           | jslot >= beginSecondEpoch
             -- ... and could instead join unproblematically at the latest time
-            -- the delegation certificate would mature
+            -- the delegation certificate would mature ...
           , latestPossibleDlgMaturation pbftSecurityParam numCoreNodes jslot
-              <= lastSlot
+              < sentinel
           , let nodeJoinPlan' =
-                  NodeJoinPlan $ Map.insert nid (jslot + twoK) njp
-          , Ref.viable params lastSlot nodeJoinPlan' Ref.emptyState
-          , Ref.deterministicPlan numSlots nodeJoinPlan'
+                  NodeJoinPlan $ Map.insert cid (jslot + twoK) njp
+          , Ref.definitelyEnoughBlocks params $
+            Ref.simulate params nodeJoinPlan' numSlots
+            -- ... and does not join in the same slot as the leader of the next
+            -- slot unless they are neighbors (otherwise the dlg cert tx might
+            -- not reach it soon enough)
+          , let nextLeader = Ref.mkLeaderOf params $ succ jslot
+          , jslot /= coreNodeIdJoinSlot nodeJoinPlan nextLeader ||
+            cid `elem` coreNodeIdNeighbors nodeTopology nextLeader
           -> pure $ NodeRestarts $
              -- We discard any 'NodeRestart's also scheduled for this slot.
              -- 'NodeRestart's are less interesting, so it's fine.
              --
              -- TODO retain those coincident node restarts as long as they
-             -- don't include every other node; that risks forgetting some
-             -- relevant blocks.
-             Map.insert jslot (Map.singleton nid NodeRekey) nrs
+             -- don't include every other node, since that risks forgetting
+             -- some relevant blocks.
+             Map.insert jslot (Map.singleton cid NodeRekey) nrs
       _ -> pure nodeRestarts
   where
     PBftParams{pbftSecurityParam} = params
     k = maxRollbacks pbftSecurityParam
-    lastSlot = SlotNo $ fromIntegral $ t - 1
-    numCoreNodes = NumCoreNodes $ fromIntegral (Map.size njp)
+    sentinel = SlotNo t
+    numCoreNodes = NumCoreNodes $ fromIntegral $ Map.size njp
+
+    NodeJoinPlan njp = nodeJoinPlan
 
     twoK             = SlotNo $ 2 * k
     beginSecondEpoch = SlotNo $ 10 * k   -- c.f. Genesis.configEpochSlots
