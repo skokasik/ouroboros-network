@@ -248,7 +248,7 @@ implAddTxs mpEnv accum txs = assert (all txInvariant txs) $ do
         } <- readTVar mpEnvStateVar
 
       -- First sync the state, which might remove some transactions
-      syncRes <- validateIS mpEnv TxsForUnknownBlock
+      syncRes <- validateIS False mpEnv TxsForUnknownBlock
       let removed = vrInvalid syncRes
 
       -- Determine whether the tip was updated after a call to 'validateIS'
@@ -398,7 +398,7 @@ implRemoveTxs mpEnv@MempoolEnv{mpEnvTracer, mpEnvStateVar} txIds = do
             (\TxTicket { txTicketTx } -> txId txTicketTx `notElem` toRemove)
             isTxs
         }
-      vr <- validateIS mpEnv TxsForUnknownBlock
+      vr <- validateIS True mpEnv TxsForUnknownBlock
       writeTVar mpEnvStateVar $ internalStateFromVR vr
       -- The size of the mempool /after/ manually removing the transactions.
       mempoolSize <- getMempoolSize mpEnv
@@ -413,7 +413,7 @@ implSyncWithLedger :: (IOLike m, ApplyTx blk)
                    => MempoolEnv m blk -> m (MempoolSnapshot blk TicketNo)
 implSyncWithLedger mpEnv@MempoolEnv{mpEnvTracer, mpEnvStateVar} = do
     (removed, mempoolSize, snapshot) <- atomically $ do
-      vr <- validateIS mpEnv TxsForUnknownBlock
+      vr <- validateIS False mpEnv TxsForUnknownBlock
       writeTVar mpEnvStateVar (internalStateFromVR vr)
       -- The size of the mempool /after/ removing invalid transactions.
       mempoolSize <- getMempoolSize mpEnv
@@ -442,7 +442,7 @@ implGetSnapshotFor MempoolEnv{mpEnvStateVar, mpEnvLedgerCfg}
     updatedSnapshot =
           implSnapshotFromIS
         . internalStateFromVR
-        . validateStateFor mpEnvLedgerCfg blockSlot ledger
+        . validateStateFor False mpEnvLedgerCfg blockSlot ledger
 
 -- | Return the current capacity of the mempool in bytes.
 --
@@ -638,24 +638,27 @@ extendVRNew cfg tx
 
 -- | Validate internal state
 validateIS :: forall m blk. (IOLike m, ApplyTx blk)
-           => MempoolEnv m blk
+           => Bool
+           -> MempoolEnv m blk
            -> BlockSlot
            -> STM m (ValidationResult blk)
-validateIS MempoolEnv{mpEnvLedger, mpEnvLedgerCfg, mpEnvStateVar} blockSlot =
-    validateStateFor mpEnvLedgerCfg blockSlot
+validateIS slow MempoolEnv{mpEnvLedger, mpEnvLedgerCfg, mpEnvStateVar} blockSlot =
+    validateStateFor slow mpEnvLedgerCfg blockSlot
       <$> getCurrentLedgerState mpEnvLedger
       <*> readTVar mpEnvStateVar
 
 -- | Validate internal state given specific ledger
 validateStateFor :: forall blk. ApplyTx blk
-                 => LedgerConfig     blk
+                 => Bool
+                 -> LedgerConfig     blk
                  -> BlockSlot
                  -> LedgerState      blk
                  -> InternalState    blk
                  -> ValidationResult blk
-validateStateFor cfg blockSlot st IS{isTxs, isTip, isSlotNo, isLastTicketNo}
+validateStateFor slow cfg blockSlot st IS{isTxs, isTip, isSlotNo, isLastTicketNo}
   | isTip    == ledgerTipHash (tickedLedgerState st') &&
-    isSlotNo == At (tickedSlotNo st')
+    isSlotNo == At (tickedSlotNo st') &&
+    not slow
   = initVR cfg isTxs st' isLastTicketNo
   | otherwise
   = repeatedly (extendVRPrevApplied cfg) (fromTxSeq isTxs)
