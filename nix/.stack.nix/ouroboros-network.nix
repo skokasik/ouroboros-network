@@ -137,7 +137,7 @@ in { system, compiler, flags, pkgs, hsPkgs, pkgconfPkgs, ... }:
         };
       tests = {
         "test-network" = {
-          depends = [
+          depends = ([
             (hsPkgs."base" or (buildDepError "base"))
             (hsPkgs."array" or (buildDepError "array"))
             (hsPkgs."async" or (buildDepError "async"))
@@ -177,6 +177,9 @@ in { system, compiler, flags, pkgs, hsPkgs, pkgconfPkgs, ... }:
             (hsPkgs."ouroboros-network" or (buildDepError "ouroboros-network"))
             (hsPkgs."ouroboros-protocol-tests" or (buildDepError "ouroboros-protocol-tests"))
             ] ++ (pkgs.lib).optionals (system.isWindows) [
+            (hsPkgs."Win32-network" or (buildDepError "Win32-network"))
+            (hsPkgs."Win32" or (buildDepError "Win32"))
+            ]) ++ (pkgs.lib).optionals (system.isWindows) [
             (hsPkgs."Win32-network" or (buildDepError "Win32-network"))
             (hsPkgs."Win32" or (buildDepError "Win32"))
             ];
