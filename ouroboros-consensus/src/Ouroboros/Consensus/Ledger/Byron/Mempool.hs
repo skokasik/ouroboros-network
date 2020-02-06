@@ -43,6 +43,7 @@ import           Control.Monad.Except
 import           Data.ByteString (ByteString)
 import qualified Data.ByteString as Strict
 import qualified Data.ByteString.Lazy as Lazy
+import           Data.Coerce (coerce)
 import           Data.Word
 import           GHC.Generics (Generic)
 
@@ -57,10 +58,13 @@ import qualified Cardano.Chain.Block as CC
 import qualified Cardano.Chain.Byron.API as CC
 import qualified Cardano.Chain.Delegation as Delegation
 import qualified Cardano.Chain.MempoolPayload as CC
+import qualified Cardano.Chain.Slotting (SlotNumber (..))
 import qualified Cardano.Chain.Update.Proposal as Update
 import qualified Cardano.Chain.Update.Vote as Update
 import qualified Cardano.Chain.UTxO as Utxo
 import qualified Cardano.Chain.ValidationMode as CC
+
+import qualified Cardano.Slotting.Slot (SlotNo (..))
 
 import           Ouroboros.Consensus.Ledger.Abstract
 import           Ouroboros.Consensus.Ledger.Byron.Block
@@ -199,6 +203,7 @@ applyByronGenTx validationMode cfg genTx (TickedLedgerState slot st) =
       CC.applyMempoolPayload
         validationMode
         (unByronLedgerConfig cfg)
+        (coerce slot)
         (toMempoolPayload genTx)
         (byronLedgerState st)
 

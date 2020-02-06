@@ -475,6 +475,30 @@ tests = testGroup "RealPBFT" $
             , slotLengths  = defaultSlotLengths
             , initSeed     = Seed {getSeed = (11230515745126725611,17023640443344827504,12175165143571139209,1732951060216843643,1600055577042702310)}
             }
+    , testProperty "mkDelegationEnvironment uses currentSlot not latestSlot" $
+      -- After rekeying, node 2 continues to emit its dlg cert tx. This an ugly
+      -- implementation detail of rekeying, but as a nice surprise it found a
+      -- bug!
+      --
+      -- In slot 40, node 1 forged a block that included the now-/expired/ dlg
+      -- cert tx (cf @WrongEpoch@). This happened because the Byron transaction
+      -- validation logic was using the slot of the latest block (i.e. 39) as
+      -- the current slot (i.e. actually 40), so the transaction wasn't
+      -- identified as expired until it was already inside a block.
+      once $
+      let ncn = NumCoreNodes 3 in
+      prop_simple_real_pbft_convergence
+       NoEBBs
+       SecurityParam {maxRollbacks = 2}
+       TestConfig
+         { numCoreNodes = ncn
+         , numSlots     = NumSlots 41
+         , nodeJoinPlan = trivialNodeJoinPlan ncn
+         , nodeRestarts = NodeRestarts $ Map.singleton (SlotNo 30) $ Map.singleton (CoreNodeId 2) NodeRekey
+         , nodeTopology = meshNodeTopology ncn
+         , slotLengths  = defaultSlotLengths
+         , initSeed     = Seed (368401128646137767,7989071211759985580,4921478144180472393,11759221144888418607,7602439127562955319)
+         }
     , testProperty "simple convergence" $
           \produceEBBs ->
           -- TODO k > 1 as a workaround for Issue #1511.
