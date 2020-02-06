@@ -71,21 +71,20 @@ import           Cardano.Prelude (NoUnexpectedThunks (..), ThunkInfo (..))
 
 import           Control.Tracer
 
-import           Network.TypedProtocol.Driver.ByteLimit
-import           Network.TypedProtocol.Driver (TraceSendRecv)
-
 import qualified Network.Mux as Mx
 import Network.Mux.DeltaQ.TraceTransformer
 import qualified Network.Mux.Types as Mx
 import qualified Network.Mux.Bearer.Socket as Mx
 
+import           Ouroboros.Network.Channel
+import           Ouroboros.Network.Driver.ByteLimit
+import           Ouroboros.Network.Driver (TraceSendRecv)
+import           Ouroboros.Network.Mux
 import           Ouroboros.Network.ErrorPolicy
 import           Ouroboros.Network.Subscription.PeerState
 import           Ouroboros.Network.Protocol.Handshake.Type
 import           Ouroboros.Network.Protocol.Handshake.Version
 import           Ouroboros.Network.Protocol.Handshake.Codec
-import           Ouroboros.Network.Mux
-import           Ouroboros.Network.Channel
 import qualified Ouroboros.Network.Server.Socket as Server
 import           Ouroboros.Network.Server.ConnectionTable
 

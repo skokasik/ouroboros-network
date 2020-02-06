@@ -353,6 +353,7 @@ test-suite test-consensus
                     cardano-slotting,
                     typed-protocols,
                     network-mux,
+                    ouroboros-network-framework,
                     ouroboros-network,
                     ouroboros-consensus,
                     io-sim-classes,

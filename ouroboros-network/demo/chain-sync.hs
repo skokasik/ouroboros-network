@@ -33,7 +33,6 @@ import           System.IO
 import           System.Random
 import           System.Random.SplitMix
 
-import           Codec.Serialise (DeserialiseFailure)
 import qualified Codec.Serialise as CBOR
 
 import qualified Network.Socket as Socket
@@ -49,15 +48,14 @@ import           Ouroboros.Network.Point (WithOrigin (..))
 import           Ouroboros.Network.Socket
 import           Ouroboros.Network.Testing.ConcreteBlock
 
-import           Network.TypedProtocol.Channel
-import           Network.TypedProtocol.Codec
-import           Network.TypedProtocol.Driver
-import           Network.TypedProtocol.Pipelined
-
+import Network.TypedProtocol.Pipelined
 import Network.TypedProtocol.PingPong.Client as PingPong
 import Network.TypedProtocol.PingPong.Server as PingPong
 import Network.TypedProtocol.PingPong.Codec.CBOR
 
+import           Ouroboros.Network.Codec
+import           Ouroboros.Network.Channel
+import           Ouroboros.Network.Driver
 import           Ouroboros.Network.Protocol.Handshake.Type
 import           Ouroboros.Network.Protocol.Handshake.Version
 

@@ -73,13 +73,13 @@ import           Codec.SerialiseTerm
 import qualified Network.Socket as Socket
 
 import           Network.Mux hiding (MiniProtocolLimits(..))
-import           Network.TypedProtocol.Driver.ByteLimit (DecoderFailureOrTooMuchInput)
-import           Network.TypedProtocol.Driver (TraceSendRecv (..))
 
+import           Ouroboros.Network.Driver (TraceSendRecv(..))
+import           Ouroboros.Network.Driver.ByteLimit (DecoderFailureOrTooMuchInput)
+import           Ouroboros.Network.Mux
 import           Ouroboros.Network.Magic
 import           Ouroboros.Network.ErrorPolicy
 import           Ouroboros.Network.Tracers
-import           Ouroboros.Network.Mux
 import           Ouroboros.Network.Protocol.ChainSync.Client (chainSyncClientNull)
 import           Ouroboros.Network.Protocol.LocalTxSubmission.Client (localTxSubmissionClientNull)
 import           Ouroboros.Network.Protocol.Handshake.Type
