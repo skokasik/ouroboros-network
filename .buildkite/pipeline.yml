@@ -1,13 +1,22 @@
 steps:
-  - label: 'check-hydra'
-    command: 'ci/check-hydra.sh'
+  - label: 'stack rebuild'
+    env:
+      STACK_ROOT: "/build/ouroroboros-network.stack"
+    command:
+      - "rm -rf /build/ouroroboros-network"
+      - "cp -R . /build/ouroroboros-network"
+      - "cd /build/ouroroboros-network"
+      - "nix-build scripts/buildkite -o stack-rebuild"
+      - "./stack-rebuild"
     agents:
       system: x86_64-linux
-  - label: 'stack2nix'
-    command: 'ci/check-stack2nix.sh'
+
+  - label: 'stack-cabal-sync'
+    command: 'nix-shell scripts/buildkite/stack-cabal-sync.nix --run scripts/buildkite/stack-cabal-sync.sh'
     agents:
       system: x86_64-linux
-  - label: 'dependencies-in-master'
-    command: 'ci/check-dependencies-merged-in-master.sh'
+
+  - label: 'check-cabal-project'
+    command: 'nix-build ./nix -A iohkNix.checkCabalProject -o check-cabal-project.sh && ./check-cabal-project.sh'
     agents:
       system: x86_64-linux
