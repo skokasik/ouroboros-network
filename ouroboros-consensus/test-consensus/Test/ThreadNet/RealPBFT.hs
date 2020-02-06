@@ -499,6 +499,18 @@ tests = testGroup "RealPBFT" $
          , slotLengths  = defaultSlotLengths
          , initSeed     = Seed (368401128646137767,7989071211759985580,4921478144180472393,11759221144888418607,7602439127562955319)
          }
+    , testProperty "delayed message corner case" $
+          once $
+          let ncn = NumCoreNodes 2 in
+          prop_simple_real_pbft_convergence NoEBBs (SecurityParam 7) TestConfig
+            { numCoreNodes = ncn
+            , numSlots     = NumSlots 10
+            , nodeJoinPlan = NodeJoinPlan (Map.fromList [(CoreNodeId 0,SlotNo {unSlotNo = 0}),(CoreNodeId 1,SlotNo {unSlotNo = 1})])
+            , nodeRestarts = noRestarts
+            , nodeTopology = meshNodeTopology ncn
+            , slotLengths  = defaultSlotLengths
+            , initSeed     = Seed (11954171112552902178,1213614443200450055,13600682863893184545,15433529895532611662,2464843772450023204)
+            }
     , testProperty "simple convergence" $
           \produceEBBs ->
           -- TODO k > 1 as a workaround for Issue #1511.
@@ -659,6 +671,7 @@ unguarded_prop_simple_real_pbft_convergence produceEBBs k
            Ref.Forked{} -> 1
            _            -> 0)
         (expectedBlockRejection k numCoreNodes nodeRestarts)
+        1
         testOutput .&&.
     not (all (Chain.null . snd) finalChains) .&&.
     conjoin (map (hasAllEBBs k numSlots produceEBBs) finalChains)

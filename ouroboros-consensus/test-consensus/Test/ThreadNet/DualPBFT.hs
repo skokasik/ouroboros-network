@@ -80,6 +80,7 @@ prop_convergence setup =
          Ref.Forked{} -> 1
          _            -> 0)
       (setupExpectedRejections setup)
+      1
       (setupTestOutput         setup)
   where
     cfg = setupConfig setup
