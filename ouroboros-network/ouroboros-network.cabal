@@ -56,7 +56,6 @@ library
                        Ouroboros.Network.DeltaQ
                        Ouroboros.Network.Magic
                        Ouroboros.Network.ErrorPolicy
-                       Ouroboros.Network.Mux
                        Ouroboros.Network.Diffusion
                        Ouroboros.Network.NodeToNode
                        Ouroboros.Network.NodeToClient
