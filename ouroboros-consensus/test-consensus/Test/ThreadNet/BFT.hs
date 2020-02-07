@@ -5,6 +5,7 @@ module Test.ThreadNet.BFT (
   ) where
 
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import           Test.QuickCheck
 import           Test.Tasty
 import           Test.Tasty.QuickCheck
@@ -29,7 +30,7 @@ import           Test.Consensus.BlockchainTime.SlotLengths ()
 import           Test.Util.Orphans.Arbitrary ()
 
 tests :: TestTree
-tests = testGroup "BFT"
+tests = testGroup "BFT" $
     [ testProperty "delayed message corner case" $
         once $
         let ncn = NumCoreNodes 2 in
@@ -42,8 +43,26 @@ tests = testGroup "BFT"
           , slotLengths = singletonSlotLengths (slotLengthFromSec 1)
           , initSeed = Seed {getSeed = (12659702313441544615,9326820694273232011,15820857683988100572,2201554969601311572,4716411940989238571)}
           }
-    ,
-      testProperty "simple convergence" $ \tc ->
+    , testProperty "Issue 1147 repro" $
+        once $
+        prop_simple_bft_convergence (SecurityParam 2) TestConfig
+          { numCoreNodes = NumCoreNodes 3
+          , numSlots     = NumSlots 9
+          , nodeJoinPlan = NodeJoinPlan $ Map.fromList
+            [ (CoreNodeId 0,SlotNo 0)
+            , (CoreNodeId 1,SlotNo 8)
+            , (CoreNodeId 2,SlotNo 8)
+            ]
+          , nodeRestarts = noRestarts
+          , nodeTopology = NodeTopology $ Map.fromList
+            [ (CoreNodeId 0,Set.fromList [])
+            , (CoreNodeId 1,Set.fromList [CoreNodeId 0])
+            , (CoreNodeId 2,Set.fromList [CoreNodeId 1])
+            ]
+          , slotLengths  = singletonSlotLengths (slotLengthFromSec 1)
+          , initSeed     = Seed (317569674076995990,1400219811092957410,3013877175146189952,18105513987980723485,854518542308106760)
+          }
+    , testProperty "simple convergence" $ \tc ->
         forAll (SecurityParam <$> elements [2 .. 10]) $ \k ->
         prop_simple_bft_convergence k tc
     ]
