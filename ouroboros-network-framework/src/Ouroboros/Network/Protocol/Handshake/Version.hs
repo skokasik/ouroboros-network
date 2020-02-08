@@ -13,6 +13,7 @@ module Ouroboros.Network.Protocol.Handshake.Version
 
   , Dict (..)
   , DictVersion (..)
+  , CodecCBORTerm (..)
   , pickVersions
   , VersionMismatch (..)
   ) where
@@ -21,7 +22,8 @@ import Data.Map (Map)
 import Data.Text (Text)
 import qualified Data.Map as Map
 import Data.Typeable ((:~:)(Refl), Typeable, eqT)
-import Codec.SerialiseTerm
+import Codec.CBOR.Term as CBOR
+
 
 -- Description of versions.
 --
@@ -84,6 +86,11 @@ data DictVersion vData where
                     )
                  => CodecCBORTerm Text vData
                  -> DictVersion vData
+
+data CodecCBORTerm fail a = CodecCBORTerm
+  { encodeTerm :: a -> CBOR.Term
+  , decodeTerm :: CBOR.Term -> Either fail a
+  }
 
 -- | Pick the version with the highest version number (by `Ord vNum`) common
 -- in both maps.

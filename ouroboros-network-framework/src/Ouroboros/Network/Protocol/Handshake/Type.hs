@@ -55,7 +55,6 @@ import qualified Codec.CBOR.Decoding as CBOR
 import qualified Codec.CBOR.Term     as CBOR
 import           Codec.Serialise (Serialise)
 import qualified Codec.Serialise     as CBOR
-import           Codec.SerialiseTerm
 
 import           Network.TypedProtocol.Core
 
