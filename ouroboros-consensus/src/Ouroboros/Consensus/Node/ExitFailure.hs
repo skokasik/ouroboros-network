@@ -118,7 +118,6 @@ toExitFailure e
     volDbUnexpectedError :: VolDB.UnexpectedError -> ExitFailure
     volDbUnexpectedError = \case
       VolDB.FileSystemError fe -> fsError fe
-      _                        -> restartWithRecovery
 
     fsError :: FsError -> ExitFailure
     fsError FsError { fsErrorType } = case fsErrorType of
