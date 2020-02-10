@@ -86,7 +86,6 @@
             (hsPkgs.splitmix)
             (hsPkgs.stm)
             (hsPkgs.typed-protocols)
-            (hsPkgs.typed-protocols-examples)
             ];
           };
         };
@@ -128,7 +127,6 @@
             (hsPkgs.text)
             (hsPkgs.time)
             (hsPkgs.typed-protocols)
-            (hsPkgs.typed-protocols-examples)
             (hsPkgs.ouroboros-network-framework)
             (hsPkgs.ouroboros-network)
             (hsPkgs.ouroboros-protocol-tests)
@@ -157,7 +155,6 @@
             (hsPkgs.tasty-quickcheck)
             (hsPkgs.text)
             (hsPkgs.typed-protocols)
-            (hsPkgs.typed-protocols-examples)
             (hsPkgs.ouroboros-network-framework)
             (hsPkgs.ouroboros-network)
             (hsPkgs.ouroboros-protocol-tests)

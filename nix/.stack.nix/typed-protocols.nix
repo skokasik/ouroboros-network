@@ -15,14 +15,6 @@
       buildType = "Simple";
       };
     components = {
-      "library" = {
-        depends = [
-          (hsPkgs.base)
-          (hsPkgs.io-sim-classes)
-          (hsPkgs.bytestring)
-          (hsPkgs.contra-tracer)
-          (hsPkgs.time)
-          ];
-        };
+      "library" = { depends = [ (hsPkgs.base) (hsPkgs.io-sim-classes) ]; };
       };
     } // rec { src = (pkgs.lib).mkDefault ../../././typed-protocols; }

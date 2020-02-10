@@ -118,6 +118,7 @@
             (hsPkgs.cardano-slotting)
             (hsPkgs.typed-protocols)
             (hsPkgs.network-mux)
+            (hsPkgs.ouroboros-network-framework)
             (hsPkgs.ouroboros-network)
             (hsPkgs.ouroboros-consensus)
             (hsPkgs.io-sim-classes)
