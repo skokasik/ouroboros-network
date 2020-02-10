@@ -11,7 +11,7 @@
 
 {-# OPTIONS_GHC -Wno-orphans     #-}
 
-module Test.Subscription (tests) where
+module Test.Ouroboros.Network.Subscription (tests) where
 
 import           Control.Concurrent hiding (threadDelay)
 import           Control.Monad (replicateM, unless, when)
@@ -33,12 +33,6 @@ import           Data.Void (Void)
 import           Data.Word
 import qualified Network.DNS as DNS
 import qualified Network.Socket as Socket
-import           Test.QuickCheck
-import           Test.Tasty (TestTree, testGroup)
-import           Text.Printf
-import           Text.Show.Functions ()
-
-import           Test.Tasty.QuickCheck (shuffle, testProperty)
 
 --TODO: time utils should come from elsewhere
 import           Network.Mux.Time (microsecondsToDiffTime)
@@ -48,21 +42,28 @@ import qualified Network.TypedProtocol.ReqResp.Server as ReqResp
 import qualified Network.TypedProtocol.ReqResp.Codec.CBOR as ReqResp
 import qualified Network.TypedProtocol.ReqResp.Examples   as ReqResp
 
-import           Ouroboros.Network.Protocol.Handshake.Type (acceptEq, cborTermVersionDataCodec)
-import           Ouroboros.Network.Protocol.Handshake.Version (simpleSingletonVersions)
+import           Ouroboros.Network.Protocol.Handshake.Type
+import           Ouroboros.Network.Protocol.Handshake.Version
 
 import           Ouroboros.Network.Driver
-import           Ouroboros.Network.Magic
+import           Ouroboros.Network.ErrorPolicy
 import           Ouroboros.Network.Mux
-import           Ouroboros.Network.NodeToNode hiding (dnsSubscriptionWorker,
-                     ipSubscriptionWorker)
 import           Ouroboros.Network.Socket
 import           Ouroboros.Network.Subscription
 import           Ouroboros.Network.Subscription.Dns
 import           Ouroboros.Network.Subscription.Ip
 import           Ouroboros.Network.Subscription.PeerState
 import           Ouroboros.Network.Subscription.Subscriber
-import           Ouroboros.Network.Subscription.Worker (WorkerParams (..))
+import           Ouroboros.Network.Subscription.Worker (LocalAddresses(..), WorkerParams(..))
+
+import           Test.Ouroboros.Network.Handshake
+
+import           Test.QuickCheck
+import           Test.Tasty (TestTree, testGroup)
+import           Test.Tasty.QuickCheck (testProperty, shuffle)
+import           Text.Printf
+import           Text.Show.Functions ()
+
 
 defaultMiniProtocolLimit :: Int64
 defaultMiniProtocolLimit = 3000000
@@ -553,7 +554,7 @@ prop_send_recv f xs first = ioProperty $ do
         responderAddr
         cborTermVersionDataCodec
         (\(DictVersion _) -> acceptEq)
-        (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) responderApp)
+        (unversionedProtocol responderApp)
         nullErrorPolicies
         $ \_ _ -> do
           dnsSubscriptionWorker'
@@ -574,8 +575,7 @@ prop_send_recv f xs first = ioProperty $ do
             (connectToNode'
                 cborTermVersionDataCodec
                 nullNetworkConnectTracers
-                (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0)
-                (DictVersion nodeToNodeCodecCBORTerm) initiatorApp))
+                (unversionedProtocol initiatorApp))
 
     res <- atomically $ (,) <$> takeTMVar sv <*> takeTMVar cv
     return (res == mapAccumL f 0 xs)
@@ -681,7 +681,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
         responderAddr
         cborTermVersionDataCodec
         (\(DictVersion _) -> acceptEq)
-        (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) (appX rrcfg))
+        (unversionedProtocol (appX rrcfg))
         nullErrorPolicies
         $ \localAddr _ -> do
           atomically $ putTMVar localAddrVar localAddr
@@ -696,7 +696,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
         responderAddr
         cborTermVersionDataCodec
         (\(DictVersion _) -> acceptEq)
-        ((simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) (appX rrcfg)))
+        (unversionedProtocol (appX rrcfg))
         nullErrorPolicies
         $ \localAddr _ -> do
           peerStatesVar <- newPeerStatesVar
@@ -717,8 +717,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
             (connectToNode'
                 cborTermVersionDataCodec
                 nullNetworkConnectTracers
-                (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0)
-                (DictVersion nodeToNodeCodecCBORTerm) $ appX rrcfg))
+                (unversionedProtocol (appX rrcfg)))
 
           atomically $ (,) <$> takeTMVar (rrcServerVar rrcfg)
                            <*> takeTMVar (rrcClientVar rrcfg)
@@ -786,8 +785,7 @@ _demo = ioProperty $ do
             (connectToNode'
                 cborTermVersionDataCodec
                 nullNetworkConnectTracers
-                (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0)
-                (DictVersion nodeToNodeCodecCBORTerm) appReq))
+                (unversionedProtocol appReq))
 
     threadDelay 130
     -- bring the servers back again
@@ -805,8 +803,7 @@ _demo = ioProperty $ do
             addr
             cborTermVersionDataCodec
             (\(DictVersion _) -> acceptEq)
-            (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0)
-                (DictVersion nodeToNodeCodecCBORTerm) appRsp)
+            (unversionedProtocol appRsp)
             nullErrorPolicies
             (\_ _ -> threadDelay delay)
 
