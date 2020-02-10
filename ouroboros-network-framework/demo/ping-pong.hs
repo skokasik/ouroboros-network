@@ -10,17 +10,14 @@
 
 module Main where
 
-import           Data.List
 import qualified Data.ByteString.Lazy as LBS
+import qualified Data.Text as Text
+import           Data.Text (Text)
 import           Data.Functor (void)
-import qualified Data.Map as Map
-import qualified Data.Set as Set
-import           Data.Set (Set)
 import           Data.Void (Void)
 
 import Control.Concurrent.Async
 import Control.Monad (when)
-import Control.Exception
 import Control.Tracer
 
 import System.IO
@@ -33,10 +30,13 @@ import qualified Network.Socket as Socket
 import Ouroboros.Network.Codec
 import Ouroboros.Network.Socket
 import Ouroboros.Network.Mux
+import Ouroboros.Network.ErrorPolicy
 
 import Ouroboros.Network.Protocol.Handshake.Type
 import Ouroboros.Network.Protocol.Handshake.Version
+import qualified Codec.CBOR.Term as CBOR
 
+import Network.TypedProtocol.Pipelined
 import Network.TypedProtocol.PingPong.Client as PingPong
 import Network.TypedProtocol.PingPong.Server as PingPong
 import Network.TypedProtocol.PingPong.Codec.CBOR as PingPong
@@ -87,6 +87,24 @@ rmIfExists path = do
   when b (removeFile path)
 
 --
+-- Version negotation
+--
+
+data NullVersionData = NullVersionData
+  deriving (Eq, Show)
+
+nullVersionDataCodecCBORTerm :: CodecCBORTerm Text NullVersionData
+nullVersionDataCodecCBORTerm = CodecCBORTerm {encodeTerm, decodeTerm}
+    where
+      encodeTerm :: NullVersionData -> CBOR.Term
+      encodeTerm NullVersionData = CBOR.TNull
+
+      decodeTerm :: CBOR.Term -> Either Text NullVersionData
+      decodeTerm CBOR.TNull = Right NullVersionData
+      decodeTerm t          = Left $ Text.pack $ "unexpected term: " ++ show t
+
+
+--
 -- Ping pong demo
 --
 
@@ -107,8 +125,8 @@ clientPingPong pipelined =
       cborTermVersionDataCodec
       nullNetworkConnectTracers
       (simpleSingletonVersions (0::Int)
-                               (NodeToNodeVersionData $ NetworkMagic 0)
-                               (DictVersion nodeToNodeCodecCBORTerm) app)
+                               NullVersionData
+                               (DictVersion nullVersionDataCodecCBORTerm) app)
       Nothing
       defaultLocalSocketAddrInfo
   where
@@ -148,8 +166,8 @@ serverPingPong = do
       cborTermVersionDataCodec
       (\(DictVersion _) -> acceptEq)
       (simpleSingletonVersions (0::Int)
-                               (NodeToNodeVersionData $ NetworkMagic 0)
-                               (DictVersion nodeToNodeCodecCBORTerm) app)
+                               NullVersionData
+                               (DictVersion nullVersionDataCodecCBORTerm) app)
       nullErrorPolicies
       $ \_ serverAsync ->
         wait serverAsync   -- block until async exception
@@ -200,8 +218,8 @@ clientPingPong2 =
       cborTermVersionDataCodec
       nullNetworkConnectTracers
       (simpleSingletonVersions (0::Int)
-                               (NodeToNodeVersionData $ NetworkMagic 0)
-                               (DictVersion nodeToNodeCodecCBORTerm) app)
+                               NullVersionData
+                               (DictVersion nullVersionDataCodecCBORTerm) app)
       Nothing
       defaultLocalSocketAddrInfo
   where
@@ -254,8 +272,8 @@ serverPingPong2 = do
       cborTermVersionDataCodec
       (\(DictVersion _) -> acceptEq)
       (simpleSingletonVersions (0::Int)
-                               (NodeToNodeVersionData $ NetworkMagic 0)
-                               (DictVersion nodeToNodeCodecCBORTerm) app)
+                               NullVersionData
+                               (DictVersion nullVersionDataCodecCBORTerm) app)
       nullErrorPolicies
       $ \_ serverAsync ->
         wait serverAsync   -- block until async exception
