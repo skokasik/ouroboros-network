@@ -71,6 +71,7 @@ import           Ouroboros.Storage.EpochInfo (EpochInfo, newEpochInfo)
 import           Ouroboros.Storage.FS.API.Types
 import           Ouroboros.Storage.FS.IO (ioHasFS)
 import           Ouroboros.Storage.ImmutableDB (ValidationPolicy (..))
+import           Ouroboros.Storage.VolatileDB (BlockValidationPolicy (..))
 import           Ouroboros.Storage.LedgerDB.DiskPolicy (defaultDiskPolicy)
 import           Ouroboros.Storage.LedgerDB.InMemory (ledgerDbDefaultParams)
 
@@ -243,6 +244,7 @@ mkChainDbArgs tracer registry btime dbPath cfg initLedger
     , ChainDB.cdbRegistry         = registry
     , ChainDB.cdbTracer           = tracer
     , ChainDB.cdbValidation       = ValidateMostRecentEpoch
+    , ChainDB.cdbBlockValidation  = NoValidation
     , ChainDB.cdbGcDelay          = secondsToDiffTime 10
     , ChainDB.cdbBlockchainTime   = btime
     }

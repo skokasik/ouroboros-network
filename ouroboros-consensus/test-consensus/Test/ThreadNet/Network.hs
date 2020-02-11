@@ -99,6 +99,7 @@ import qualified Ouroboros.Storage.ImmutableDB.Impl.Index as Index
 import qualified Ouroboros.Storage.LedgerDB.DiskPolicy as LgrDB
 import qualified Ouroboros.Storage.LedgerDB.InMemory as LgrDB
 import qualified Ouroboros.Storage.Util.ErrorHandling as EH
+import qualified Ouroboros.Storage.VolatileDB as VolDB
 
 import           Test.ThreadNet.TxGen
 import           Test.ThreadNet.Util.NodeJoinPlan
@@ -530,6 +531,7 @@ runThreadNetwork ThreadNetworkArgs
         , cdbHasFSLgrDB       = simHasFS EH.monadCatch (nodeDBsLgr nodeDBs)
           -- Policy
         , cdbValidation       = ImmDB.ValidateAllEpochs
+        , cdbBlockValidation  = VolDB.ValidateAll
         , cdbBlocksPerFile    = 4
         , cdbParamsLgrDB      = LgrDB.ledgerDbDefaultParams (protocolSecurityParam cfg)
         , cdbDiskPolicy       = LgrDB.defaultDiskPolicy (protocolSecurityParam cfg)

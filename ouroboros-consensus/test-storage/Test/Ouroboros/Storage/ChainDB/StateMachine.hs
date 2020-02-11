@@ -99,6 +99,7 @@ import           Ouroboros.Storage.LedgerDB.DiskPolicy (defaultDiskPolicy)
 import           Ouroboros.Storage.LedgerDB.InMemory (LedgerDbParams (..))
 import qualified Ouroboros.Storage.LedgerDB.OnDisk as LedgerDB
 import qualified Ouroboros.Storage.Util.ErrorHandling as EH
+import           Ouroboros.Storage.VolatileDB (BlockValidationPolicy (..))
 
 import           Test.Ouroboros.Storage.ChainDB.Model (IteratorId,
                      ModelSupportsBlock, ReaderId)
@@ -1440,6 +1441,7 @@ mkArgs cfg initLedger tracer registry varCurSlot
 
       -- Policy
     , cdbValidation       = ValidateAllEpochs
+    , cdbBlockValidation  = ValidateAll
     , cdbBlocksPerFile    = 4
     , cdbParamsLgrDB      = LedgerDbParams {
                                 -- Pick a small value for 'ledgerDbSnapEvery',
